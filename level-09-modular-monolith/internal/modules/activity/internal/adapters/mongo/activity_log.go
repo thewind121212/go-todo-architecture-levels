@@ -1,5 +1,5 @@
-// Package mongo is a driven adapter: it implements the activity module's ActivityLog and
-// TxManager with the official MongoDB driver.
+// Package mongo is a driven adapter: it implements the activity module's ActivityLog
+// with the official MongoDB driver.
 package mongo
 
 import (
@@ -44,7 +44,7 @@ func (l *ActivityLog) ListByTodo(ctx context.Context, todoID string) ([]*applica
 
 // Add inserts the activity only if its id (the event id) is new: an upsert whose update is
 // $setOnInsert writes nothing when the document exists. A plain InsertOne would fail with a
-// duplicate key instead, and inside a transaction that error aborts the whole transaction.
+// duplicate key instead, and the caller would have to tell that error apart from a real one.
 func (l *ActivityLog) Add(ctx context.Context, activity *application.Activity) error {
 	insert := bson.D{{Key: "$setOnInsert", Value: toActivityDoc(activity)}}
 	opts := options.UpdateOne().SetUpsert(true)

@@ -33,9 +33,3 @@ type ActivityLog interface {
 	// Add inserts the activity unless one with its id exists: a repeat changes nothing.
 	Add(ctx context.Context, activity *Activity) error
 }
-
-// TxManager runs fn in one transaction of the activity module's own storage and hands it
-// to the adapters through ctx.
-type TxManager interface {
-	WithinTx(ctx context.Context, fn func(ctx context.Context) error) error
-}

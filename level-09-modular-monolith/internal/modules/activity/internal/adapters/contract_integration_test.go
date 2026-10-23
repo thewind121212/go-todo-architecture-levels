@@ -6,7 +6,6 @@ package adapters_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -27,7 +26,6 @@ import (
 // adapters is one storage choice, seen only through the module's ports.
 type adapters struct {
 	activities application.ActivityLog
-	tx         application.TxManager
 }
 
 func TestPostgresAdapters(t *testing.T) {
@@ -48,7 +46,7 @@ func TestPostgresAdapters(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(closeDB)
 
-	runContract(t, adapters{activities: pgadapter.NewActivityLog(db), tx: pgadapter.NewTxManager(db)})
+	runContract(t, adapters{activities: pgadapter.NewActivityLog(db)})
 }
 
 func TestMongoAdapters(t *testing.T) {
@@ -65,7 +63,7 @@ func TestMongoAdapters(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(disconnect)
 
-	runContract(t, adapters{activities: mongoadapter.NewActivityLog(db), tx: mongoadapter.NewTxManager(db)})
+	runContract(t, adapters{activities: mongoadapter.NewActivityLog(db)})
 }
 
 // runContract is the behavior every adapter must have. Subtests share one
@@ -101,7 +99,7 @@ func runContract(t *testing.T, a adapters) {
 	// Idempotency, end to end through the subscriber: at-least-once delivery may hand
 	// the module the same event twice, and the log still has one line for it.
 	t.Run("recording the same event twice leaves one activity", func(t *testing.T) {
-		svc := application.NewService(a.activities, a.tx)
+		svc := application.NewService(a.activities)
 		event := contracts.TodoRenamed{
 			EventMeta: contracts.EventMeta{EventID: newID(), TodoID: uuid.NewString(), OccurredAt: now()},
 			Title:     "new",
@@ -116,21 +114,6 @@ func runContract(t *testing.T, a adapters) {
 			Action:    "renamed",
 			CreatedAt: event.OccurredAt,
 		}}, list(t, event.TodoID))
-	})
-
-	// The module's own transaction: an error after the insert rolls it back.
-	t.Run("a failed transaction persists nothing", func(t *testing.T) {
-		todoID := uuid.NewString()
-		errBoom := errors.New("boom")
-
-		err := a.tx.WithinTx(ctx, func(ctx context.Context) error {
-			act := &application.Activity{ID: newID(), TodoID: todoID, Action: "created", CreatedAt: now()}
-			require.NoError(t, a.activities.Add(ctx, act))
-			return errBoom
-		})
-
-		require.ErrorIs(t, err, errBoom)
-		require.Empty(t, list(t, todoID))
 	})
 }
 

@@ -17,20 +17,9 @@ import (
 	"example.com/todo/level09/internal/platform/eventbus"
 )
 
-// inTx marks a ctx that fakeTx handed out.
-type inTx struct{}
-
-// fakeTx stands in for the module's TxManager. The real transactions are tested against
-// both databases in the contract suite.
-type fakeTx struct{}
-
-func (fakeTx) WithinTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	return fn(context.WithValue(ctx, inTx{}, true))
-}
-
 func newService(t *testing.T) (*application.Service, *mocks.MockActivityLog) {
 	activities := mocks.NewMockActivityLog(t)
-	return application.NewService(activities, fakeTx{}), activities
+	return application.NewService(activities), activities
 }
 
 func TestRecordTurnsEveryTodoEventIntoAnActivity(t *testing.T) {
@@ -49,8 +38,7 @@ func TestRecordTurnsEveryTodoEventIntoAnActivity(t *testing.T) {
 		t.Run(tt.action, func(t *testing.T) {
 			svc, activities := newService(t)
 			want := &application.Activity{ID: meta.EventID, TodoID: meta.TodoID, Action: tt.action, CreatedAt: meta.OccurredAt}
-			inItsOwnTx := mock.MatchedBy(func(ctx context.Context) bool { return ctx.Value(inTx{}) != nil })
-			activities.EXPECT().Add(inItsOwnTx, want).Return(nil).Once()
+			activities.EXPECT().Add(mock.Anything, want).Return(nil).Once()
 
 			require.NoError(t, svc.Record(context.Background(), tt.event))
 		})

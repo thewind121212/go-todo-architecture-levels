@@ -29,16 +29,16 @@ type Module struct {
 
 // NewPostgres builds the module on Postgres and subscribes it to the todo events on bus.
 func NewPostgres(db *gorm.DB, bus *eventbus.Bus, log zerolog.Logger) *Module {
-	return newModule(pgadapter.NewActivityLog(db), pgadapter.NewTxManager(db), bus, log)
+	return newModule(pgadapter.NewActivityLog(db), bus, log)
 }
 
 // NewMongo builds the module on MongoDB and subscribes it to the todo events on bus.
 func NewMongo(db *mongo.Database, bus *eventbus.Bus, log zerolog.Logger) *Module {
-	return newModule(mongoadapter.NewActivityLog(db), mongoadapter.NewTxManager(db), bus, log)
+	return newModule(mongoadapter.NewActivityLog(db), bus, log)
 }
 
-func newModule(activities application.ActivityLog, tx application.TxManager, bus *eventbus.Bus, log zerolog.Logger) *Module {
-	service := application.NewService(activities, tx)
+func newModule(activities application.ActivityLog, bus *eventbus.Bus, log zerolog.Logger) *Module {
+	service := application.NewService(activities)
 	service.Subscribe(bus)
 	return &Module{service: service, log: log}
 }

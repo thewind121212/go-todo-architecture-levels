@@ -13,13 +13,12 @@ import (
 // Service records todo events as activities and lists them.
 type Service struct {
 	activities ActivityLog
-	tx         TxManager
 }
 
 var _ ActivityQueries = (*Service)(nil)
 
-func NewService(activities ActivityLog, tx TxManager) *Service {
-	return &Service{activities: activities, tx: tx}
+func NewService(activities ActivityLog) *Service {
+	return &Service{activities: activities}
 }
 
 // Subscribe registers Record for every todo event.
@@ -33,19 +32,16 @@ func (s *Service) Subscribe(bus *eventbus.Bus) {
 }
 
 // Record is the module's subscriber: one todo event becomes one activity. It commits in the
-// activity module's own transaction, never in the todo module's or the relay's. Add ignores
-// an id it already has, so a redelivered event changes nothing.
-//
-// The insert alone would be atomic; the transaction is this module's unit of work for one
-// event, the place where any further write for that event would commit or roll back with it.
+// activity module's own storage, never in the todo module's or the relay's transaction. It is
+// one insert, so it is atomic by itself; if handling an event ever needs several writes, wrap
+// them in this module's own transaction. Add ignores an id it already has, so a redelivered
+// event changes nothing.
 func (s *Service) Record(ctx context.Context, event eventbus.Event) error {
 	activity, err := toActivity(event)
 	if err != nil {
 		return err
 	}
-	return s.tx.WithinTx(ctx, func(ctx context.Context) error {
-		return s.activities.Add(ctx, activity)
-	})
+	return s.activities.Add(ctx, activity)
 }
 
 // ListActivities returns a todo's audit log, oldest first. It does not check that the todo

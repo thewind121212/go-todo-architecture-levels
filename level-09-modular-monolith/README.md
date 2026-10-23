@@ -20,7 +20,7 @@ that stay in step through events.
  |        |                                 |                       |  |          |               |
  |  TodoRepository.Save: tx 1         todo.todo_views               |  |  activity.activities     |
  |    todo.todos + todo.outbox              ^                       |  |          ^               |
- |        |                                 | tx 2                  |  |          | tx 3          |
+ |        |                                 | tx 2                  |  |          | one insert    |
  |        |                          projection.Projector           |  |  Service.Record          |
  +--------|---------------------------------^-----------------------+  +----------^---------------+
           |                                 |                                     |
@@ -81,10 +81,10 @@ level-09-modular-monolith/
   internal/modules/activity/
     module.go                  PUBLIC: NewPostgres/NewMongo, RegisterRoutes, PostgresMigrations, PrepareMongo
     internal/
-      application/             Activity, ActivityLog + TxManager ports, ActivityQueries, Service (Record, ListActivities)
+      application/             Activity, ActivityLog port, ActivityQueries, Service (Record, ListActivities)
       adapters/http/           GET /todos/:id/activities, its own writeError
-      adapters/postgres/       ActivityLog, TxManager; table activity.activities
-      adapters/mongo/          ActivityLog, TxManager, Prepare; collection "activity.activities"
+      adapters/postgres/       ActivityLog; table activity.activities
+      adapters/mongo/          ActivityLog, Prepare; collection "activity.activities"
       adapters/contract_integration_test.go   the activity contract suite, both databases
       migrations/              000001: schema activity, activity.activities
   internal/wire/providers.go   Wire provider sets: platform + module constructors per storage choice; App
@@ -99,7 +99,7 @@ level-09-modular-monolith/
 | `todo.todos` | todo | todo id | `TodoRepository.Save` (tx 1) |
 | `todo.outbox` | todo | event id | `Save` inserts (tx 1); the relay sets `processed_at` |
 | `todo.todo_views` | todo | todo id | the todo `Projector` (tx 2) |
-| `activity.activities` | activity | event id | the activity `Service.Record` (tx 3) |
+| `activity.activities` | activity | event id | the activity `Service.Record` (one insert) |
 | `public.todo_schema_migrations` | todo | | golang-migrate, for the todo migrations |
 | `public.activity_schema_migrations` | activity | | golang-migrate, for the activity migrations |
 
@@ -133,15 +133,15 @@ own collections and indexes.
 2. **Data.** A module reads and writes only its own schema or collections. No foreign keys, joins
    or queries across modules. The activity module never looks at `todo.todos`. If it needs to
    know something about todos, it hears it in an event (or the contract gets a new field).
-3. **Transactions.** A transaction never spans two modules. Each module's adapters keep their
-   transaction in ctx under their own unexported `txKey`, so one module's adapters cannot even see
-   another's transaction. Between modules there are only events, delivered at least once to
-   idempotent subscribers.
+3. **Transactions.** A transaction never spans two modules. Each module commits its own writes:
+   the todo module in its own transactions (its adapters keep them in ctx under an unexported
+   `txKey` that no other module can see), the activity module with one atomic insert per event.
+   Between modules there are only events, delivered at least once to idempotent subscribers.
 
 The rules allow each module its own inner architecture. The todo module is DDD + CQRS, because
 it has rules to protect. The activity module is one small `application` package plus adapters,
 because it only appends and lists. A little code repeats across modules (`writeError`, the error
-DTO, parsing a UUID, `TxManager`, `conn`). That repetition is on purpose: modules share the
+DTO, parsing a UUID). That repetition is on purpose: modules share the
 platform, not each other's code.
 
 ## Request flow: `PATCH /todos/:id`
@@ -166,8 +166,8 @@ platform, not each other's code.
    * `todo/internal/application/projection/projector.go` `Handle` opens **tx 2** with the todo
      module's `TxManager`, loads the todo view, sets the title and `updated_at`, upserts it, commits;
    * `activity/internal/application/service.go` `Record` maps the event to an `Activity`
-     (`action: "renamed"`, id = event id), opens **tx 3** with the activity module's `TxManager`,
-     `ActivityLog.Add`s it (insert if absent), commits.
+     (`action: "renamed"`, id = event id) and `ActivityLog.Add`s it: **one insert** into
+     `activity.activities` (insert if absent), atomic by itself, committed at once.
 7. Every subscriber succeeded, so `process` calls `Store.MarkProcessed`. That is a single
    statement with no transaction around it.
 
@@ -178,13 +178,13 @@ Both routes sit in one Gin tree, so both modules must call the parameter `:id`.
 
 ## Where the transaction lives
 
-There are now **three kinds of transaction**, and each belongs to exactly one module.
+A change now commits in **three separate places**, and each belongs to exactly one module.
 
-| tx | module | opened by | covers |
+| commit | module | made by | covers |
 |---|---|---|---|
-| 1 | todo | `TodoRepository.Save` (unchanged) | the todo's state + its outbox rows |
-| 2 | todo | `Projector.Handle`, via the todo `TxManager` | one event's read of and write to `todo_views` |
-| 3 | activity | `Service.Record`, via the activity `TxManager` | one event's activity |
+| tx 1 | todo | `TodoRepository.Save` (unchanged) | the todo's state + its outbox rows |
+| tx 2 | todo | `Projector.Handle`, via the todo `TxManager` | one event's read of and write to `todo_views` |
+| insert | activity | `Service.Record` → `ActivityLog.Add` | one event's activity: a single statement, atomic by itself |
 
 The write transaction is level 8's, unchanged. What changed is delivery. Level 8 had one
 transaction around the projection **and** the processed mark. Level 9 cannot have that: the
@@ -210,7 +210,8 @@ func (r *Relay) process(ctx context.Context, m Message) error {
 }
 ```
 
-Each subscriber's transaction, opened through its own module's port:
+Each subscriber commits in its own module. The projector reads and then writes, so it opens a
+transaction through its module's port. The activity subscriber writes one row, so it needs none:
 
 ```go
 // todo/internal/application/projection/projector.go
@@ -226,23 +227,21 @@ func (s *Service) Record(ctx context.Context, event eventbus.Event) error {
 	if err != nil {
 		return err
 	}
-	return s.tx.WithinTx(ctx, func(ctx context.Context) error {
-		return s.activities.Add(ctx, activity)
-	})
+	return s.activities.Add(ctx, activity) // one idempotent insert, atomic by itself
 }
 ```
 
-(The activity's single insert would be atomic on its own. The transaction marks this module's
-unit of work for one event, the place where any further write for that event would join it.)
+If handling an event ever needed several writes in the activity module, they would go in a
+transaction of that module's own, exactly like the projector's.
 
 ### Before and after: one transaction vs. eventual consistency between modules
 
 ```
-level 7: one transaction, one module          level 9: three transactions, two modules
+level 7: one transaction, one module          level 9: three commits, two modules
                                                  tx 1 (todo)     todos + outbox
 tx: todos + activities                           ...later, the relay:
     either both or neither                       tx 2 (todo)     todo_views      commits on its own
-    activities are never behind                  tx 3 (activity) activities      commits on its own
+    activities are never behind                  insert (activity) activities    commits on its own
                                                  mark processed (no tx)
                                                  activities lag a write by one poll
 ```
@@ -452,6 +451,6 @@ The tests that teach this level:
   retry; that **a failing second subscriber does not undo the projector's commit**, and the
   redelivery changes nothing; and that an event delivered but not marked is harmless to deliver again.
 * the **activity contract suite** (both databases): insert-if-absent and order; **the same event
-  recorded twice gives one activity**; a failed transaction persists nothing.
+  recorded twice gives one activity**.
 * `cmd/api/e2e_integration_test.go`: create, patch and delete over HTTP, one relay poll each, and
   the activity module returns `created, renamed, completed, deleted`, still after the todo is gone.
