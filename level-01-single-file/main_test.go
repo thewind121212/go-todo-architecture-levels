@@ -121,8 +121,6 @@ func (f *fakeStore) Ping(context.Context) error {
 	return f.err
 }
 
-func ptr[T any](v T) *T { return &v }
-
 func TestValidateTitle(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -158,9 +156,9 @@ func TestValidatePatch(t *testing.T) {
 		wantErr   error
 	}{
 		{name: "empty", in: Patch{}, wantErr: ErrEmptyPatch},
-		{name: "blank title", in: Patch{Title: ptr("  ")}, wantErr: ErrInvalidTitle},
-		{name: "title is trimmed", in: Patch{Title: ptr(" new ")}, wantTitle: "new"},
-		{name: "completed only", in: Patch{Completed: ptr(true)}},
+		{name: "blank title", in: Patch{Title: new("  ")}, wantErr: ErrInvalidTitle},
+		{name: "title is trimmed", in: Patch{Title: new(" new ")}, wantTitle: "new"},
+		{name: "completed only", in: Patch{Completed: new(true)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -186,14 +184,14 @@ func TestApplyPatch(t *testing.T) {
 		wantCompleted bool
 		wantActions   []Action
 	}{
-		{name: "same title", patch: Patch{Title: ptr("a")}, wantTitle: "a"},
-		{name: "same completed", patch: Patch{Completed: ptr(false)}, wantTitle: "a"},
-		{name: "rename", patch: Patch{Title: ptr("b")}, wantTitle: "b", wantActions: []Action{ActionRenamed}},
-		{name: "complete", patch: Patch{Completed: ptr(true)}, wantTitle: "a", wantCompleted: true,
+		{name: "same title", patch: Patch{Title: new("a")}, wantTitle: "a"},
+		{name: "same completed", patch: Patch{Completed: new(false)}, wantTitle: "a"},
+		{name: "rename", patch: Patch{Title: new("b")}, wantTitle: "b", wantActions: []Action{ActionRenamed}},
+		{name: "complete", patch: Patch{Completed: new(true)}, wantTitle: "a", wantCompleted: true,
 			wantActions: []Action{ActionCompleted}},
-		{name: "reopen", completed: true, patch: Patch{Completed: ptr(false)}, wantTitle: "a",
+		{name: "reopen", completed: true, patch: Patch{Completed: new(false)}, wantTitle: "a",
 			wantActions: []Action{ActionReopened}},
-		{name: "rename and complete", patch: Patch{Title: ptr("b"), Completed: ptr(true)}, wantTitle: "b",
+		{name: "rename and complete", patch: Patch{Title: new("b"), Completed: new(true)}, wantTitle: "b",
 			wantCompleted: true, wantActions: []Action{ActionRenamed, ActionCompleted}},
 	}
 	for _, tt := range tests {

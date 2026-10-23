@@ -121,4 +121,4 @@ python3 scripts/smoke.py http://localhost:8081
 ```
 
 Config (all optional): `DB_DRIVER` (`postgres` or `mongo`), `POSTGRES_DSN`, `MONGO_URI`, `MONGO_DB` (default `todo_l01`),
-`HTTP_ADDR` (default `:8081`).
+`HTTP_ADDR` (default `:8081`). Set `GIN_MODE=release` to silence Gin's debug lines.

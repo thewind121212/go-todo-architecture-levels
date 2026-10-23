@@ -166,7 +166,7 @@ func runStoreContract(t *testing.T, s store, createThenFail func(ctx context.Con
 
 	t.Run("update writes one activity per change", func(t *testing.T) {
 		todo := mustCreate(t, "old")
-		got, err := s.Update(ctx, todo.ID, Patch{Title: ptr("new"), Completed: ptr(true)})
+		got, err := s.Update(ctx, todo.ID, Patch{Title: new("new"), Completed: new(true)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -181,7 +181,7 @@ func runStoreContract(t *testing.T, s store, createThenFail func(ctx context.Con
 			t.Fatalf("stored %+v, returned %+v", stored, got)
 		}
 
-		unchanged, err := s.Update(ctx, todo.ID, Patch{Title: ptr("new"), Completed: ptr(true)})
+		unchanged, err := s.Update(ctx, todo.ID, Patch{Title: new("new"), Completed: new(true)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -189,7 +189,7 @@ func runStoreContract(t *testing.T, s store, createThenFail func(ctx context.Con
 			t.Fatalf("no-op update changed the todo: %+v", unchanged)
 		}
 
-		if _, err := s.Update(ctx, todo.ID, Patch{Completed: ptr(false)}); err != nil {
+		if _, err := s.Update(ctx, todo.ID, Patch{Completed: new(false)}); err != nil {
 			t.Fatal(err)
 		}
 		want := []Action{ActionCreated, ActionRenamed, ActionCompleted, ActionReopened}
@@ -199,7 +199,7 @@ func runStoreContract(t *testing.T, s store, createThenFail func(ctx context.Con
 	})
 
 	t.Run("update unknown is not found", func(t *testing.T) {
-		if _, err := s.Update(ctx, newID(), Patch{Completed: ptr(true)}); !errors.Is(err, ErrNotFound) {
+		if _, err := s.Update(ctx, newID(), Patch{Completed: new(true)}); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("err = %v, want ErrNotFound", err)
 		}
 	})

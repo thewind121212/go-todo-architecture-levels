@@ -196,3 +196,47 @@ Sections, in order:
 
 Report back: final tree, test outputs (summaries), smoke results for both drivers, any deviations from this
 spec with the reason, and anything you were unsure about.
+
+## 13. Conventions settled in review (binding; these override anything above)
+
+The levels must read as one story: **the diff between level N and N+1 should show the new architectural
+idea and nothing else.** So everything below is fixed across levels.
+
+1. **Error messages are exact** (HTTP `error` field):
+   | sentinel | message |
+   |---|---|
+   | `ErrNotFound` | `todo not found` |
+   | `ErrInvalidTitle` | `title must be 1 to 200 characters` |
+   | `ErrEmptyPatch` | `patch must set title or completed` |
+   | `ErrInvalidLimit` | `limit must be between 1 and 100` |
+   | `ErrInvalidOffset` | `offset must be 0 or more` |
+   | `ErrInvalidJSON` | `invalid JSON body` |
+   In L1–L2 all six live together. From L3 on, the first three are domain errors (model/entity/domain package).
+   The last three are HTTP-layer errors (unexported is fine), because they describe the HTTP request, not the business.
+2. **Validate input before touching the database.** JSON, id, title, empty patch, and limit/offset are all
+   checked before any repository call or `WithinTx`. So `PATCH /todos/<unknown>` with `{}` or a bad title is
+   **400, not 404**. Inside the transaction only the diff happens: "what changed → which activities".
+3. **Malformed ids, L1–L6:** the HTTP layer parses `:id` with `uuid.Parse` and passes on the canonical
+   `id.String()`. A parse failure is `ErrNotFound` (404) on **every** `:id` route, **including
+   `/todos/:id/activities`**. A valid but unknown id on `/activities` returns `{"items": []}`. Services and
+   adapters do no id validation of their own. (L7+ turns this into a `TodoID` value object.)
+4. **limit/offset**: parsed and range-checked in the HTTP layer (defaults 20/0). The service just receives ints.
+5. **Postgres row lock, L1–L6:** the read that a PATCH depends on uses `SELECT … FOR UPDATE`
+   (`clause.Locking{Strength: clause.LockingStrengthUpdate}`), so two concurrent PATCHes can't both log `completed`.
+   From L3 on, this is an explicit repository method `GetForUpdate(ctx, id)`. The Mongo implementation is a plain find, with
+   a one-line comment saying a concurrent writer causes a write conflict and `WithTransaction` retries.
+   (L7+ replaces this with optimistic locking via an aggregate `version`.)
+6. **Struct tags:** in L1–L2 one `Todo` struct carries `json`, `gorm` and `bson` tags. **From L3 on**, the
+   model/entity has **no tags**: each storage adapter owns its row/doc structs + mappers, and the HTTP layer owns
+   its DTOs. L5's new idea is the *enforced* dependency rule (arch test) and one-use-case-per-struct, not the mapping.
+7. **UTC on Postgres reads:** pgx returns `timestamptz` in local time, so convert with `.UTC()` when reading.
+   L1–L2 use a `todoInUTC` helper. From L3 on, the row→model mapper does it.
+8. **Activity timestamps** equal the todo's `created_at` / `updated_at` of the same change, so one `now` per
+   operation is passed down. Delete uses one fresh `now`.
+9. **Test helpers:** use Go 1.26 `new(expr)` for pointers (no `ptr` helper). Use std `testing` only in
+   L1–L5. testify is first allowed in L6, because mockery's template needs it.
+10. **Gin:** keep `gin.Default()` / Gin's default mode. READMEs mention `GIN_MODE=release` to silence the
+    debug lines.
+11. **Carry names forward.** When a concept already exists in the previous level, reuse its name and shape
+    (`Patch`, `Apply`, `NewTodo`, `GetForUpdate`, `ListByTodo`, `WithinTx`, `nowUTC`, `writeError`, ...)
+    unless the new architecture is the reason to rename it. In that case say so in the README.

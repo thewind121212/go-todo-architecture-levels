@@ -129,6 +129,36 @@ status, body = call("GET", "/todos/not-a-uuid")
 check("GET malformed id -> 404", status == 404 and has_error(body), (status, body))
 status, body = call("PATCH", f"/todos/{missing}", {"completed": True})
 check("PATCH unknown id -> 404", status == 404 and has_error(body), (status, body))
+status, body = call("GET", "/todos/not-a-uuid/activities")
+check("GET malformed id activities -> 404", status == 404 and has_error(body), (status, body))
+status, body = call("GET", f"/todos/{missing}/activities")
+check("GET unknown id activities -> 200 []", status == 200 and body == {"items": []}, (status, body))
+
+# Input is validated before the database is touched, so 400 wins over 404.
+status, body = call("PATCH", f"/todos/{missing}", {})
+check("PATCH unknown id with {} -> 400", status == 400 and has_error(body), (status, body))
+status, body = call("PATCH", f"/todos/{missing}", {"title": " "})
+check("PATCH unknown id with blank title -> 400", status == 400 and has_error(body), (status, body))
+
+# Exact error texts (SPEC §13.1).
+for path, method, payload, want in [
+    (f"/todos/{missing}", "GET", None, "todo not found"),
+    ("/todos", "POST", {"title": ""}, "title must be 1 to 200 characters"),
+    (f"/todos/{missing}", "PATCH", {}, "patch must set title or completed"),
+    ("/todos?limit=0", "GET", None, "limit must be between 1 and 100"),
+    ("/todos?offset=-1", "GET", None, "offset must be 0 or more"),
+]:
+    status, body = call(method, path, payload)
+    check(f"{method} {path} error text = {want!r}", isinstance(body, dict) and body.get("error") == want, (status, body))
+
+req = urllib.request.Request(BASE + "/todos", data=b"{not json", method="POST")
+req.add_header("Content-Type", "application/json")
+try:
+    urllib.request.urlopen(req, timeout=5)
+    check("POST invalid JSON -> 400", False, "got 2xx")
+except urllib.error.HTTPError as e:
+    body = json.loads(e.read() or b"null")
+    check("POST invalid JSON -> 400 'invalid JSON body'", e.code == 400 and body == {"error": "invalid JSON body"}, (e.code, body))
 
 print(f"\n{'PASS' if not failures else 'FAIL'}: {len(failures)} failure(s)")
 sys.exit(1 if failures else 0)
