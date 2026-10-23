@@ -1,0 +1,8 @@
+# binaries
+/level-*/bin/
+/level-*/api
+/level-*/level*
+*.test
+*.out
+coverage.*
+.env
