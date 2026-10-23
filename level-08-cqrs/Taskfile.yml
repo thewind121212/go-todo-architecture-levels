@@ -1,0 +1,49 @@
+version: '3'
+
+vars:
+  POSTGRES_DSN: '{{.POSTGRES_DSN | default "postgres://todo:todo@localhost:5432/todo_l08?sslmode=disable"}}'
+  # golang-migrate picks its pgx v5 driver from the "pgx5://" scheme.
+  MIGRATE_DB: '{{.POSTGRES_DSN | replace "postgres://" "pgx5://"}}'
+  MIGRATE: go run -tags pgx5 github.com/golang-migrate/migrate/v4/cmd/migrate@v4.20.1
+
+tasks:
+  run:pg:
+    desc: Run the API on Postgres (migrates at startup)
+    env: { DB_DRIVER: postgres }
+    cmds: [go run ./cmd/api]
+
+  run:mongo:
+    desc: Run the API on MongoDB
+    env: { DB_DRIVER: mongo }
+    cmds: [go run ./cmd/api]
+
+  test:
+    desc: Unit tests and the architecture test (no Docker)
+    cmds: [go test ./...]
+
+  test:integration:
+    desc: Integration tests with testcontainers (needs Docker)
+    cmds: [go test -tags=integration ./...]
+
+  lint:
+    desc: gofmt + go vet, with and without the integration tag
+    cmds:
+      - test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - go vet ./...
+      - go vet -tags=integration ./...
+
+  wire:generate:
+    desc: Regenerate cmd/api/wire_gen.go from cmd/api/wire.go
+    cmds: [go tool wire ./cmd/api]
+
+  mock:generate:
+    desc: Regenerate the repository and port mocks from .mockery.yml
+    cmds: [go tool mockery]
+
+  migrate:up:
+    desc: Apply migrations with the golang-migrate CLI (the app also does this at startup)
+    cmds: ['{{.MIGRATE}} -path migrations -database "{{.MIGRATE_DB}}" up']
+
+  migrate:down:
+    desc: Roll back the last migration with the golang-migrate CLI
+    cmds: ['{{.MIGRATE}} -path migrations -database "{{.MIGRATE_DB}}" down 1']

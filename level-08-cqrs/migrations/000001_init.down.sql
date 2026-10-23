@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS activity_views;
+DROP TABLE IF EXISTS todo_views;
+DROP TABLE IF EXISTS outbox;
+DROP TABLE IF EXISTS todos;
