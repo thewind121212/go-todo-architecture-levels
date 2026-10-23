@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"example.com/todo/level03/internal/model"
 )
@@ -27,6 +28,8 @@ func toTodoRow(t model.Todo) todoRow {
 	return todoRow{ID: t.ID, Title: t.Title, Completed: t.Completed, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt}
 }
 
+// toModel converts to UTC because pgx returns timestamptz in the process's
+// local time zone, while the API promises UTC.
 func (r todoRow) toModel() model.Todo {
 	return model.Todo{ID: r.ID, Title: r.Title, Completed: r.Completed, CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC()}
 }
@@ -48,15 +51,14 @@ func (r *TodoRepository) Create(ctx context.Context, todo model.Todo) error {
 }
 
 func (r *TodoRepository) Get(ctx context.Context, id string) (model.Todo, error) {
-	var row todoRow
-	err := conn(ctx, r.db).Where("id = ?", id).Take(&row).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return model.Todo{}, model.ErrNotFound
-	}
-	if err != nil {
-		return model.Todo{}, fmt.Errorf("get todo: %w", err)
-	}
-	return row.toModel(), nil
+	return findTodo(conn(ctx, r.db), id)
+}
+
+// GetForUpdate adds FOR UPDATE: the row stays locked until the transaction
+// ends, so two concurrent PATCHes can't both see "not completed" and both log
+// a "completed" activity.
+func (r *TodoRepository) GetForUpdate(ctx context.Context, id string) (model.Todo, error) {
+	return findTodo(conn(ctx, r.db).Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}), id)
 }
 
 func (r *TodoRepository) List(ctx context.Context, limit, offset int) ([]model.Todo, error) {
@@ -98,4 +100,17 @@ func (r *TodoRepository) Delete(ctx context.Context, id string) error {
 		return model.ErrNotFound
 	}
 	return nil
+}
+
+// findTodo works on a plain or a locking query, so Get and GetForUpdate share it.
+func findTodo(db *gorm.DB, id string) (model.Todo, error) {
+	var row todoRow
+	err := db.Where("id = ?", id).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return model.Todo{}, model.ErrNotFound
+	}
+	if err != nil {
+		return model.Todo{}, fmt.Errorf("find todo: %w", err)
+	}
+	return row.toModel(), nil
 }

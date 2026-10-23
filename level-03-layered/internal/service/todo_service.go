@@ -6,8 +6,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
-
 	"example.com/todo/level03/internal/model"
 	"example.com/todo/level03/internal/repository"
 )
@@ -23,8 +21,7 @@ func NewTodoService(tx repository.TxManager, todos repository.TodoRepository, ac
 }
 
 func (s *TodoService) Create(ctx context.Context, title string) (model.Todo, error) {
-	now := now()
-	todo, err := model.NewTodo(title, now)
+	todo, err := model.NewTodo(title, nowUTC())
 	if err != nil {
 		return model.Todo{}, err
 	}
@@ -32,7 +29,7 @@ func (s *TodoService) Create(ctx context.Context, title string) (model.Todo, err
 		if err := s.todos.Create(ctx, todo); err != nil {
 			return err
 		}
-		return s.record(ctx, todo.ID, now, model.ActionCreated)
+		return s.record(ctx, todo.ID, todo.CreatedAt, model.ActionCreated)
 	})
 	if err != nil {
 		return model.Todo{}, err
@@ -41,9 +38,6 @@ func (s *TodoService) Create(ctx context.Context, title string) (model.Todo, err
 }
 
 func (s *TodoService) Get(ctx context.Context, id string) (model.Todo, error) {
-	if !validID(id) {
-		return model.Todo{}, model.ErrNotFound
-	}
 	return s.todos.Get(ctx, id)
 }
 
@@ -51,24 +45,23 @@ func (s *TodoService) List(ctx context.Context, limit, offset int) ([]model.Todo
 	return s.todos.List(ctx, limit, offset)
 }
 
-// Update reads the todo, applies the patch, saves it and records one activity
-// per change, all in one transaction: if any step fails, nothing is written.
-func (s *TodoService) Update(ctx context.Context, id string, patch model.Patch) (model.Todo, error) {
-	if !validID(id) {
-		return model.Todo{}, model.ErrNotFound
+// Update validates the patch first, so bad input never opens a transaction.
+// Then one transaction locks and reads the todo, applies the patch, saves it
+// and records one activity per change: if any step fails, nothing is written.
+func (s *TodoService) Update(ctx context.Context, id string, p model.Patch) (model.Todo, error) {
+	p, err := model.ValidatePatch(p)
+	if err != nil {
+		return model.Todo{}, err
 	}
 	var todo model.Todo
-	err := s.tx.WithinTx(ctx, func(ctx context.Context) error {
+	err = s.tx.WithinTx(ctx, func(ctx context.Context) error {
 		var err error
-		todo, err = s.todos.Get(ctx, id)
+		todo, err = s.todos.GetForUpdate(ctx, id)
 		if err != nil {
 			return err
 		}
-		now := now()
-		actions, err := todo.Apply(patch, now)
-		if err != nil {
-			return err
-		}
+		now := nowUTC()
+		actions := todo.Apply(p, now)
 		if len(actions) == 0 {
 			return nil // nothing changed, so nothing to write
 		}
@@ -84,51 +77,33 @@ func (s *TodoService) Update(ctx context.Context, id string, patch model.Patch) 
 }
 
 func (s *TodoService) Delete(ctx context.Context, id string) error {
-	if !validID(id) {
-		return model.ErrNotFound
-	}
 	return s.tx.WithinTx(ctx, func(ctx context.Context) error {
 		if err := s.todos.Delete(ctx, id); err != nil {
 			return err
 		}
-		return s.record(ctx, id, now(), model.ActionDeleted)
+		return s.record(ctx, id, nowUTC(), model.ActionDeleted)
 	})
 }
 
 // ListActivities does not check that the todo exists: activities outlive
 // deleted todos.
 func (s *TodoService) ListActivities(ctx context.Context, todoID string) ([]model.Activity, error) {
-	if !validID(todoID) {
-		return nil, nil
-	}
 	return s.activities.ListByTodo(ctx, todoID)
 }
 
 // record inserts one activity per action. It must be called inside WithinTx
 // with the transaction's ctx.
-func (s *TodoService) record(ctx context.Context, todoID string, now time.Time, actions ...model.Action) error {
+func (s *TodoService) record(ctx context.Context, todoID string, at time.Time, actions ...model.Action) error {
 	for _, action := range actions {
-		activity, err := model.NewActivity(todoID, action, now)
-		if err != nil {
-			return err
-		}
-		if err := s.activities.Create(ctx, activity); err != nil {
+		if err := s.activities.Create(ctx, model.NewActivity(todoID, action, at)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// now is truncated to milliseconds because that is all MongoDB stores; this
-// way both adapters return exactly the time that was written.
-func now() time.Time {
+// nowUTC is truncated to milliseconds because Mongo stores milliseconds;
+// this way both adapters round-trip exactly the same value.
+func nowUTC() time.Time {
 	return time.Now().UTC().Truncate(time.Millisecond)
-}
-
-// validID reports whether id is a UUID in the canonical lowercase form the app
-// generates. Any other id cannot exist, so the service answers ErrNotFound
-// without asking the database (Postgres would reject it as invalid uuid syntax).
-func validID(id string) bool {
-	u, err := uuid.Parse(id)
-	return err == nil && u.String() == id
 }

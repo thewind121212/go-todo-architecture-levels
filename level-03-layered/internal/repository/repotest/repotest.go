@@ -32,6 +32,7 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 	}{
 		{"CreateAndGet", testCreateAndGet},
 		{"GetUnknown", testGetUnknown},
+		{"GetForUpdate", testGetForUpdate},
 		{"ListNewestFirst", testListNewestFirst},
 		{"Update", testUpdate},
 		{"Delete", testDelete},
@@ -46,26 +47,21 @@ func Run(t *testing.T, newStorage func(t *testing.T) Storage) {
 	}
 }
 
-func now() time.Time {
+func nowUTC() time.Time {
 	return time.Now().UTC().Truncate(time.Millisecond)
 }
 
 func newTodo(t *testing.T, title string) model.Todo {
 	t.Helper()
-	todo, err := model.NewTodo(title, now())
+	todo, err := model.NewTodo(title, nowUTC())
 	if err != nil {
 		t.Fatalf("new todo: %v", err)
 	}
 	return todo
 }
 
-func newActivity(t *testing.T, todoID string, action model.Action) model.Activity {
-	t.Helper()
-	a, err := model.NewActivity(todoID, action, now())
-	if err != nil {
-		t.Fatalf("new activity: %v", err)
-	}
-	return a
+func newActivity(todoID string, action model.Action) model.Activity {
+	return model.NewActivity(todoID, action, nowUTC())
 }
 
 func mustCreate(t *testing.T, s Storage, todo model.Todo) {
@@ -97,6 +93,28 @@ func testCreateAndGet(t *testing.T, s Storage) {
 
 func testGetUnknown(t *testing.T, s Storage) {
 	assertNotFound(t, s, uuid.NewString())
+}
+
+func testGetForUpdate(t *testing.T, s Storage) {
+	todo := newTodo(t, "locked")
+	mustCreate(t, s, todo)
+
+	err := s.Tx.WithinTx(t.Context(), func(ctx context.Context) error {
+		got, err := s.Todos.GetForUpdate(ctx, todo.ID)
+		if err != nil {
+			return err
+		}
+		if got != todo {
+			t.Errorf("got %+v, want %+v", got, todo)
+		}
+		if _, err := s.Todos.GetForUpdate(ctx, uuid.NewString()); !errors.Is(err, model.ErrNotFound) {
+			t.Errorf("unknown id: err = %v, want ErrNotFound", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("within tx: %v", err)
+	}
 }
 
 func testListNewestFirst(t *testing.T, s Storage) {
@@ -138,7 +156,7 @@ func testUpdate(t *testing.T, s Storage) {
 
 	todo.Title = "new"
 	todo.Completed = true
-	todo.UpdatedAt = now().Add(time.Second)
+	todo.UpdatedAt = nowUTC().Add(time.Second)
 	if err := s.Todos.Update(t.Context(), todo); err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -181,10 +199,10 @@ func testDelete(t *testing.T, s Storage) {
 func testActivities(t *testing.T, s Storage) {
 	todoID, otherID := uuid.NewString(), uuid.NewString()
 	want := []model.Activity{
-		newActivity(t, todoID, model.ActionCreated),
-		newActivity(t, todoID, model.ActionRenamed),
+		newActivity(todoID, model.ActionCreated),
+		newActivity(todoID, model.ActionRenamed),
 	}
-	for _, a := range []model.Activity{want[0], newActivity(t, otherID, model.ActionCreated), want[1]} {
+	for _, a := range []model.Activity{want[0], newActivity(otherID, model.ActionCreated), want[1]} {
 		if err := s.Activities.Create(t.Context(), a); err != nil {
 			t.Fatalf("create activity: %v", err)
 		}
@@ -210,7 +228,7 @@ func testTxCommit(t *testing.T, s Storage) {
 		if err := s.Todos.Create(ctx, todo); err != nil {
 			return err
 		}
-		return s.Activities.Create(ctx, newActivity(t, todo.ID, model.ActionCreated))
+		return s.Activities.Create(ctx, newActivity(todo.ID, model.ActionCreated))
 	})
 	if err != nil {
 		t.Fatalf("within tx: %v", err)
@@ -233,7 +251,7 @@ func testTxRollback(t *testing.T, s Storage) {
 		if err := s.Todos.Create(ctx, todo); err != nil {
 			return err
 		}
-		if err := s.Activities.Create(ctx, newActivity(t, todo.ID, model.ActionCreated)); err != nil {
+		if err := s.Activities.Create(ctx, newActivity(todo.ID, model.ActionCreated)); err != nil {
 			return err
 		}
 		return errBoom

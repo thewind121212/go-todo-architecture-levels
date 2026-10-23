@@ -44,16 +44,41 @@ func TestNewTodo(t *testing.T) {
 	}
 }
 
+func TestValidatePatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		patch     Patch
+		wantTitle string
+		wantErr   error
+	}{
+		{name: "trims title", patch: Patch{Title: new("  new ")}, wantTitle: "new"},
+		{name: "completed only", patch: Patch{Completed: new(true)}},
+		{name: "empty patch", patch: Patch{}, wantErr: ErrEmptyPatch},
+		{name: "blank title", patch: Patch{Title: new(" ")}, wantErr: ErrInvalidTitle},
+		{name: "title too long", patch: Patch{Title: new(strings.Repeat("x", 201))}, wantErr: ErrInvalidTitle},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ValidatePatch(tt.patch)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			if got.Title != nil && *got.Title != tt.wantTitle {
+				t.Errorf("title = %q, want %q", *got.Title, tt.wantTitle)
+			}
+		})
+	}
+}
+
 func TestTodoApply(t *testing.T) {
 	tests := []struct {
 		name        string
 		start       Todo
 		patch       Patch
 		wantActions []Action
-		wantErr     error
 	}{
 		{name: "rename", patch: Patch{Title: new("new")}, wantActions: []Action{ActionRenamed}},
-		{name: "same title after trim", patch: Patch{Title: new(" old ")}},
+		{name: "same title", patch: Patch{Title: new("old")}},
 		{name: "complete", patch: Patch{Completed: new(true)}, wantActions: []Action{ActionCompleted}},
 		{name: "reopen", start: Todo{Completed: true}, patch: Patch{Completed: new(false)}, wantActions: []Action{ActionReopened}},
 		{name: "already completed", start: Todo{Completed: true}, patch: Patch{Completed: new(true)}},
@@ -62,8 +87,6 @@ func TestTodoApply(t *testing.T) {
 			patch:       Patch{Title: new("new"), Completed: new(true)},
 			wantActions: []Action{ActionRenamed, ActionCompleted},
 		},
-		{name: "empty patch", patch: Patch{}, wantErr: ErrEmptyPatch},
-		{name: "invalid title", patch: Patch{Title: new(" ")}, wantErr: ErrInvalidTitle},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -71,10 +94,7 @@ func TestTodoApply(t *testing.T) {
 			todo.Title = "old"
 			todo.UpdatedAt = created
 
-			actions, err := todo.Apply(tt.patch, later)
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("err = %v, want %v", err, tt.wantErr)
-			}
+			actions := todo.Apply(tt.patch, later)
 			if !slices.Equal(actions, tt.wantActions) {
 				t.Errorf("actions = %v, want %v", actions, tt.wantActions)
 			}

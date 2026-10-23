@@ -9,22 +9,23 @@ import (
 	"example.com/todo/level03/internal/model"
 )
 
-// Request errors found by the handler itself, before the service is called.
+// HTTP-layer errors: they describe a malformed request, not a business rule,
+// so they live here instead of in model.
 var (
+	errInvalidLimit  = errors.New("limit must be between 1 and 100")
+	errInvalidOffset = errors.New("offset must be 0 or more")
 	errInvalidJSON   = errors.New("invalid JSON body")
-	errInvalidLimit  = errors.New("limit must be an integer from 1 to 100")
-	errInvalidOffset = errors.New("offset must be an integer >= 0")
 )
 
-// writeError is the one place where errors become HTTP status codes.
+// writeError is the one place that turns an error into an HTTP status.
 // Unknown errors are logged with their full chain and hidden from the client.
 func (h *Handler) writeError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, model.ErrNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": model.ErrNotFound.Error()})
-	case errors.Is(err, model.ErrInvalidTitle),
+	case errors.Is(err, errInvalidJSON),
+		errors.Is(err, model.ErrInvalidTitle),
 		errors.Is(err, model.ErrEmptyPatch),
-		errors.Is(err, errInvalidJSON),
 		errors.Is(err, errInvalidLimit),
 		errors.Is(err, errInvalidOffset):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

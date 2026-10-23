@@ -109,19 +109,22 @@ func TestCreateTodo(t *testing.T) {
 func TestBadRequests(t *testing.T) {
 	s := newTestServer()
 	todo := s.createTodo(t, "title")
+	unknown := uuid.NewString()
 
 	tests := []struct {
 		name, method, path, body, wantMsg string
 	}{
-		{"blank title", http.MethodPost, "/todos", `{"title":"  "}`, "title must be 1-200 characters"},
-		{"title too long", http.MethodPost, "/todos", `{"title":"` + strings.Repeat("x", 201) + `"}`, "title must be 1-200 characters"},
+		{"blank title", http.MethodPost, "/todos", `{"title":"  "}`, "title must be 1 to 200 characters"},
+		{"title too long", http.MethodPost, "/todos", `{"title":"` + strings.Repeat("x", 201) + `"}`, "title must be 1 to 200 characters"},
 		{"invalid json", http.MethodPost, "/todos", `{`, "invalid JSON body"},
 		{"wrong type", http.MethodPatch, "/todos/" + todo.ID, `{"completed":"yes"}`, "invalid JSON body"},
-		{"empty patch", http.MethodPatch, "/todos/" + todo.ID, `{}`, "provide title and/or completed"},
-		{"limit 0", http.MethodGet, "/todos?limit=0", "", "limit must be an integer from 1 to 100"},
-		{"limit 101", http.MethodGet, "/todos?limit=101", "", "limit must be an integer from 1 to 100"},
-		{"limit abc", http.MethodGet, "/todos?limit=abc", "", "limit must be an integer from 1 to 100"},
-		{"offset -1", http.MethodGet, "/todos?offset=-1", "", "offset must be an integer >= 0"},
+		{"empty patch", http.MethodPatch, "/todos/" + todo.ID, `{}`, "patch must set title or completed"},
+		{"empty patch on unknown id", http.MethodPatch, "/todos/" + unknown, `{}`, "patch must set title or completed"},
+		{"blank title on unknown id", http.MethodPatch, "/todos/" + unknown, `{"title":" "}`, "title must be 1 to 200 characters"},
+		{"limit 0", http.MethodGet, "/todos?limit=0", "", "limit must be between 1 and 100"},
+		{"limit 101", http.MethodGet, "/todos?limit=101", "", "limit must be between 1 and 100"},
+		{"limit abc", http.MethodGet, "/todos?limit=abc", "", "limit must be between 1 and 100"},
+		{"offset -1", http.MethodGet, "/todos?offset=-1", "", "offset must be 0 or more"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -140,7 +143,10 @@ func TestNotFound(t *testing.T) {
 		{"get unknown", http.MethodGet, "/todos/" + unknown, ""},
 		{"get malformed", http.MethodGet, "/todos/not-a-uuid", ""},
 		{"patch unknown", http.MethodPatch, "/todos/" + unknown, `{"completed":true}`},
+		{"patch malformed", http.MethodPatch, "/todos/not-a-uuid", `{"completed":true}`},
 		{"delete unknown", http.MethodDelete, "/todos/" + unknown, ""},
+		{"delete malformed", http.MethodDelete, "/todos/not-a-uuid", ""},
+		{"activities malformed", http.MethodGet, "/todos/not-a-uuid/activities", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -205,11 +211,9 @@ func TestUpdateDeleteAndActivities(t *testing.T) {
 
 func TestListActivitiesUnknownTodoIsEmpty(t *testing.T) {
 	s := newTestServer()
-	for _, id := range []string{uuid.NewString(), "not-a-uuid"} {
-		rec := s.do(t, http.MethodGet, "/todos/"+id+"/activities", "")
-		if rec.Code != http.StatusOK || rec.Body.String() != `{"items":[]}` {
-			t.Errorf("%s: got %d %s, want 200 {\"items\":[]}", id, rec.Code, rec.Body)
-		}
+	rec := s.do(t, http.MethodGet, "/todos/"+uuid.NewString()+"/activities", "")
+	if rec.Code != http.StatusOK || rec.Body.String() != `{"items":[]}` {
+		t.Errorf("got %d %s, want 200 {\"items\":[]}", rec.Code, rec.Body)
 	}
 }
 

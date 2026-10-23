@@ -5,13 +5,9 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"example.com/todo/level03/internal/model"
-)
-
-const (
-	defaultLimit = 20
-	maxLimit     = 100
 )
 
 func (h *Handler) createTodo(c *gin.Context) {
@@ -29,14 +25,9 @@ func (h *Handler) createTodo(c *gin.Context) {
 }
 
 func (h *Handler) listTodos(c *gin.Context) {
-	limit, err := queryInt(c, "limit", defaultLimit)
-	if err != nil || limit < 1 || limit > maxLimit {
-		h.writeError(c, errInvalidLimit)
-		return
-	}
-	offset, err := queryInt(c, "offset", 0)
-	if err != nil || offset < 0 {
-		h.writeError(c, errInvalidOffset)
+	limit, offset, err := parsePage(c)
+	if err != nil {
+		h.writeError(c, err)
 		return
 	}
 	todos, err := h.todos.List(c.Request.Context(), limit, offset)
@@ -52,7 +43,12 @@ func (h *Handler) listTodos(c *gin.Context) {
 }
 
 func (h *Handler) getTodo(c *gin.Context) {
-	todo, err := h.todos.Get(c.Request.Context(), c.Param("id"))
+	id, err := todoID(c)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	todo, err := h.todos.Get(c.Request.Context(), id)
 	if err != nil {
 		h.writeError(c, err)
 		return
@@ -61,13 +57,17 @@ func (h *Handler) getTodo(c *gin.Context) {
 }
 
 func (h *Handler) updateTodo(c *gin.Context) {
+	id, err := todoID(c)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
 	var req updateTodoRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.writeError(c, errInvalidJSON)
 		return
 	}
-	patch := model.Patch{Title: req.Title, Completed: req.Completed}
-	todo, err := h.todos.Update(c.Request.Context(), c.Param("id"), patch)
+	todo, err := h.todos.Update(c.Request.Context(), id, model.Patch{Title: req.Title, Completed: req.Completed})
 	if err != nil {
 		h.writeError(c, err)
 		return
@@ -76,7 +76,12 @@ func (h *Handler) updateTodo(c *gin.Context) {
 }
 
 func (h *Handler) deleteTodo(c *gin.Context) {
-	if err := h.todos.Delete(c.Request.Context(), c.Param("id")); err != nil {
+	id, err := todoID(c)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	if err := h.todos.Delete(c.Request.Context(), id); err != nil {
 		h.writeError(c, err)
 		return
 	}
@@ -84,7 +89,12 @@ func (h *Handler) deleteTodo(c *gin.Context) {
 }
 
 func (h *Handler) listActivities(c *gin.Context) {
-	activities, err := h.todos.ListActivities(c.Request.Context(), c.Param("id"))
+	id, err := todoID(c)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	activities, err := h.todos.ListActivities(c.Request.Context(), id)
 	if err != nil {
 		h.writeError(c, err)
 		return
@@ -96,11 +106,24 @@ func (h *Handler) listActivities(c *gin.Context) {
 	c.JSON(http.StatusOK, listActivitiesResponse{Items: items})
 }
 
-// queryInt reads an integer query parameter, or returns def when it is absent.
-func queryInt(c *gin.Context, key string, def int) (int, error) {
-	s, ok := c.GetQuery(key)
-	if !ok {
-		return def, nil
+// todoID reads the :id path parameter. A malformed id can't match any todo,
+// so it is reported as not found rather than as a bad request.
+func todoID(c *gin.Context) (string, error) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return "", model.ErrNotFound
 	}
-	return strconv.Atoi(s)
+	return id.String(), nil
+}
+
+func parsePage(c *gin.Context) (limit, offset int, err error) {
+	limit, err = strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if err != nil || limit < 1 || limit > 100 {
+		return 0, 0, errInvalidLimit
+	}
+	offset, err = strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if err != nil || offset < 0 {
+		return 0, 0, errInvalidOffset
+	}
+	return limit, offset, nil
 }

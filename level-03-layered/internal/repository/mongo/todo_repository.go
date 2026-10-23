@@ -48,9 +48,16 @@ func (r *TodoRepository) Get(ctx context.Context, id string) (model.Todo, error)
 		return model.Todo{}, model.ErrNotFound
 	}
 	if err != nil {
-		return model.Todo{}, fmt.Errorf("get todo: %w", err)
+		return model.Todo{}, fmt.Errorf("find todo: %w", err)
 	}
 	return doc.toModel(), nil
+}
+
+// GetForUpdate is a plain find: Mongo has no row lock. If another transaction
+// changes this todo first, Mongo reports a write conflict and WithTransaction
+// reruns the whole callback, so a stale read is never committed.
+func (r *TodoRepository) GetForUpdate(ctx context.Context, id string) (model.Todo, error) {
+	return r.Get(ctx, id)
 }
 
 // List sorts by _id: UUIDv7 strings sort in creation order.

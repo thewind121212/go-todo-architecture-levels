@@ -78,7 +78,7 @@ func TestUpdateRecordsOneActivityPerChange(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	got, err := d.svc.Update(t.Context(), todo.ID, model.Patch{Title: new("new"), Completed: new(true)})
+	got, err := d.svc.Update(t.Context(), todo.ID, model.Patch{Title: new("  new "), Completed: new(true)})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -129,29 +129,43 @@ func TestUpdateFailsWhenActivityInsertFails(t *testing.T) {
 }
 
 func TestNotFound(t *testing.T) {
+	d := newTestService()
 	unknown := uuid.NewString()
+
+	if _, err := d.svc.Get(t.Context(), unknown); !errors.Is(err, model.ErrNotFound) {
+		t.Errorf("get: err = %v, want ErrNotFound", err)
+	}
+	if _, err := d.svc.Update(t.Context(), unknown, model.Patch{Completed: new(true)}); !errors.Is(err, model.ErrNotFound) {
+		t.Errorf("update: err = %v, want ErrNotFound", err)
+	}
+	if err := d.svc.Delete(t.Context(), unknown); !errors.Is(err, model.ErrNotFound) {
+		t.Errorf("delete: err = %v, want ErrNotFound", err)
+	}
+	if acts := actionsOf(t, d, unknown); len(acts) != 0 {
+		t.Errorf("activities = %v, want none", acts)
+	}
+}
+
+// An invalid patch is rejected before any transaction, so it is a validation
+// error even for an id that does not exist.
+func TestUpdateValidatesBeforeTransaction(t *testing.T) {
 	tests := []struct {
-		name string
-		id   string
+		name    string
+		patch   model.Patch
+		wantErr error
 	}{
-		{name: "unknown id", id: unknown},
-		{name: "malformed id", id: "not-a-uuid"},
-		{name: "non-canonical id", id: "{" + unknown + "}"},
+		{name: "empty patch", patch: model.Patch{}, wantErr: model.ErrEmptyPatch},
+		{name: "blank title", patch: model.Patch{Title: new(" ")}, wantErr: model.ErrInvalidTitle},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := newTestService()
-			if _, err := d.svc.Get(t.Context(), tt.id); !errors.Is(err, model.ErrNotFound) {
-				t.Errorf("get: err = %v, want ErrNotFound", err)
+			_, err := d.svc.Update(t.Context(), uuid.NewString(), tt.patch)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
 			}
-			if _, err := d.svc.Update(t.Context(), tt.id, model.Patch{Completed: new(true)}); !errors.Is(err, model.ErrNotFound) {
-				t.Errorf("update: err = %v, want ErrNotFound", err)
-			}
-			if err := d.svc.Delete(t.Context(), tt.id); !errors.Is(err, model.ErrNotFound) {
-				t.Errorf("delete: err = %v, want ErrNotFound", err)
-			}
-			if acts := actionsOf(t, d, tt.id); len(acts) != 0 {
-				t.Errorf("activities = %v, want none", acts)
+			if d.tx.Commits+d.tx.Rollbacks != 0 {
+				t.Errorf("transactions = %d, want 0", d.tx.Commits+d.tx.Rollbacks)
 			}
 		})
 	}

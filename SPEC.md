@@ -235,8 +235,9 @@ idea and nothing else.** So everything below is fixed across levels.
    operation is passed down. Delete uses one fresh `now`.
 9. **Test helpers:** use Go 1.26 `new(expr)` for pointers (no `ptr` helper). Use std `testing` only in
    L1–L5. testify is first allowed in L6, because mockery's template needs it.
-10. **Gin:** keep `gin.Default()` / Gin's default mode. READMEs mention `GIN_MODE=release` to silence the
-    debug lines.
+10. **Gin:** L1–L2 use `gin.Default()`. From L3 on (zerolog arrives): `gin.New()` + `gin.Recovery()` + a
+    zerolog request-log middleware, so each request is logged once. Keep Gin's default mode everywhere. READMEs
+    mention `GIN_MODE=release` to silence the debug lines.
 11. **Carry names forward.** When a concept already exists in the previous level, reuse its name and shape
     (`Patch`, `Apply`, `NewTodo`, `GetForUpdate`, `ListByTodo`, `WithinTx`, `nowUTC`, `writeError`, ...)
     unless the new architecture is the reason to rename it. In that case say so in the README.

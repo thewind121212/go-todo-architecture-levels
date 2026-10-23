@@ -12,11 +12,14 @@ import (
 	"example.com/todo/level03/internal/model"
 )
 
-// TodoRepository stores todos. Get, Update and Delete return model.ErrNotFound
-// for an unknown id.
+// TodoRepository stores todos. Get, GetForUpdate, Update and Delete return
+// model.ErrNotFound for an unknown id.
 type TodoRepository interface {
 	Create(ctx context.Context, todo model.Todo) error
 	Get(ctx context.Context, id string) (model.Todo, error)
+	// GetForUpdate reads a todo inside a transaction and keeps a concurrent
+	// transaction from changing it before this one ends.
+	GetForUpdate(ctx context.Context, id string) (model.Todo, error)
 	List(ctx context.Context, limit, offset int) ([]model.Todo, error) // newest first
 	Update(ctx context.Context, todo model.Todo) error
 	Delete(ctx context.Context, id string) error

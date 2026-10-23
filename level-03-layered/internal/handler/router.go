@@ -4,6 +4,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -26,6 +27,8 @@ type Handler struct {
 func NewRouter(todos *service.TodoService, ping func(context.Context) error, log zerolog.Logger) *gin.Engine {
 	h := &Handler{todos: todos, ping: ping, log: log}
 
+	// gin.New instead of gin.Default: requestLogger replaces Gin's text
+	// logger, so each request is logged once, as zerolog JSON.
 	r := gin.New()
 	r.Use(gin.Recovery(), requestLogger(log))
 	r.GET("/health", h.health)
@@ -53,7 +56,7 @@ func requestLogger(log zerolog.Logger) gin.HandlerFunc {
 
 func (h *Handler) health(c *gin.Context) {
 	if err := h.ping(c.Request.Context()); err != nil {
-		h.writeError(c, err)
+		h.writeError(c, fmt.Errorf("ping: %w", err))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})

@@ -34,6 +34,11 @@ func (r *TodoRepository) Get(_ context.Context, id string) (model.Todo, error) {
 	return todo, nil
 }
 
+// GetForUpdate is Get: the fakes run one request at a time, so there is nothing to lock.
+func (r *TodoRepository) GetForUpdate(ctx context.Context, id string) (model.Todo, error) {
+	return r.Get(ctx, id)
+}
+
 func (r *TodoRepository) List(_ context.Context, limit, offset int) ([]model.Todo, error) {
 	todos := slices.Collect(maps.Values(r.todos))
 	slices.SortFunc(todos, func(a, b model.Todo) int { return cmp.Compare(b.ID, a.ID) })

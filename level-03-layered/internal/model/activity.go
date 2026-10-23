@@ -1,11 +1,6 @@
 package model
 
-import (
-	"fmt"
-	"time"
-
-	"github.com/google/uuid"
-)
+import "time"
 
 // Action says what happened to a todo.
 type Action string
@@ -18,8 +13,8 @@ const (
 	ActionDeleted   Action = "deleted"
 )
 
-// Activity is one entry in a todo's append-only audit log. TodoID is not a
-// foreign key: activities outlive deleted todos.
+// Activity is one entry in a todo's append-only audit log. It has no foreign
+// key on purpose: activities outlive the todo they describe.
 type Activity struct {
 	ID        string
 	TodoID    string
@@ -27,11 +22,8 @@ type Activity struct {
 	CreatedAt time.Time
 }
 
-// NewActivity returns a new activity for todoID.
-func NewActivity(todoID string, action Action, now time.Time) (Activity, error) {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return Activity{}, fmt.Errorf("new activity id: %w", err)
-	}
-	return Activity{ID: id.String(), TodoID: todoID, Action: action, CreatedAt: now}, nil
+// NewActivity returns a new activity for todoID, stamped with the time of the
+// change it records.
+func NewActivity(todoID string, action Action, at time.Time) Activity {
+	return Activity{ID: newID(), TodoID: todoID, Action: action, CreatedAt: at}
 }

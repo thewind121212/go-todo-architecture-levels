@@ -3,7 +3,6 @@
 package model
 
 import (
-	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -23,65 +22,75 @@ type Todo struct {
 	UpdatedAt time.Time
 }
 
-// Patch is a partial update. A nil field means "leave unchanged".
+// Patch is a partial update: a nil field means "leave it alone".
 type Patch struct {
 	Title     *string
 	Completed *bool
 }
 
-// NewTodo validates title and returns a new, not yet completed todo.
-func NewTodo(title string, now time.Time) (Todo, error) {
-	title, err := normalizeTitle(title)
-	if err != nil {
-		return Todo{}, err
-	}
-	id, err := uuid.NewV7()
-	if err != nil {
-		return Todo{}, fmt.Errorf("new todo id: %w", err)
-	}
-	return Todo{ID: id.String(), Title: title, CreatedAt: now, UpdatedAt: now}, nil
+// newID returns a time-ordered UUIDv7, so sorting by id sorts by creation time.
+// NewV7 only fails if crypto/rand fails, and since Go 1.24 that crashes the
+// program instead of returning an error, so Must can never panic here.
+func newID() string {
+	return uuid.Must(uuid.NewV7()).String()
 }
 
-// Apply changes t according to p and returns one action per field that really
-// changed, in a fixed order (renamed before completed/reopened). No actions
-// means nothing changed, and t is left untouched.
-//
-// This rule lives in model rather than in the service because it is pure: it
-// needs no repository or transaction, so it can be tested on its own and the
-// service stays focused on orchestration.
-func (t *Todo) Apply(p Patch, now time.Time) ([]Action, error) {
-	if p.Title == nil && p.Completed == nil {
-		return nil, ErrEmptyPatch
-	}
-	var actions []Action
-	if p.Title != nil {
-		title, err := normalizeTitle(*p.Title)
-		if err != nil {
-			return nil, err
-		}
-		if title != t.Title {
-			t.Title = title
-			actions = append(actions, ActionRenamed)
-		}
-	}
-	if p.Completed != nil && *p.Completed != t.Completed {
-		t.Completed = *p.Completed
-		if t.Completed {
-			actions = append(actions, ActionCompleted)
-		} else {
-			actions = append(actions, ActionReopened)
-		}
-	}
-	if len(actions) > 0 {
-		t.UpdatedAt = now
-	}
-	return actions, nil
-}
-
-func normalizeTitle(title string) (string, error) {
-	title = strings.TrimSpace(title)
+func validateTitle(raw string) (string, error) {
+	title := strings.TrimSpace(raw)
 	if n := utf8.RuneCountInString(title); n < 1 || n > maxTitleLen {
 		return "", ErrInvalidTitle
 	}
 	return title, nil
+}
+
+// NewTodo validates title and returns a new, not yet completed todo.
+func NewTodo(title string, now time.Time) (Todo, error) {
+	title, err := validateTitle(title)
+	if err != nil {
+		return Todo{}, err
+	}
+	return Todo{ID: newID(), Title: title, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+// ValidatePatch trims the title and rejects a patch that sets nothing. The
+// service calls it before opening a transaction, so bad input never reaches
+// the database.
+func ValidatePatch(p Patch) (Patch, error) {
+	if p.Title == nil && p.Completed == nil {
+		return Patch{}, ErrEmptyPatch
+	}
+	if p.Title != nil {
+		title, err := validateTitle(*p.Title)
+		if err != nil {
+			return Patch{}, err
+		}
+		p.Title = &title
+	}
+	return p, nil
+}
+
+// Apply changes t according to a validated patch and returns one action per
+// real change (none if nothing changed), renamed before completed/reopened.
+//
+// This rule lives in model rather than in the service because it is pure: it
+// needs no repository or transaction, so it can be tested on its own and the
+// service stays focused on orchestration.
+func (t *Todo) Apply(p Patch, now time.Time) []Action {
+	var actions []Action
+	if p.Title != nil && *p.Title != t.Title {
+		t.Title = *p.Title
+		actions = append(actions, ActionRenamed)
+	}
+	if p.Completed != nil && *p.Completed != t.Completed {
+		t.Completed = *p.Completed
+		action := ActionReopened
+		if t.Completed {
+			action = ActionCompleted
+		}
+		actions = append(actions, action)
+	}
+	if len(actions) > 0 {
+		t.UpdatedAt = now
+	}
+	return actions
 }
