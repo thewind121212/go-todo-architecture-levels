@@ -241,3 +241,19 @@ idea and nothing else.** So everything below is fixed across levels.
 11. **Carry names forward.** When a concept already exists in the previous level, reuse its name and shape
     (`Patch`, `Apply`, `NewTodo`, `GetForUpdate`, `ListByTodo`, `WithinTx`, `nowUTC`, `writeError`, ...)
     unless the new architecture is the reason to rename it. In that case say so in the README.
+
+## 14. Levels 7–9 additions (binding for L7, L8, L9)
+
+* **The API is unchanged**, and the smoke test must still pass as-is. One addition: **409**
+  `{"error":"todo was changed by another request"}` (sentinel `ErrConflict`) when an optimistic-concurrency
+  check fails.
+* **Optimistic locking replaces `SELECT … FOR UPDATE`.** The aggregate carries a `version int`: 1 on create,
+  +1 on every saved change. It is stored in `todos` but not exposed in JSON. A save writes
+  `WHERE id = ? AND version = <loaded version>` (Mongo: filter `{_id, version}`). 0 rows matched →
+  `ErrConflict`, and nothing from that save persists.
+* **Ids become a value object:** `domain.ParseTodoID(string) (TodoID, error)`. The HTTP layer passes the raw
+  string, and the application parses it. A malformed id is `ErrInvalidID`, which the HTTP layer maps to
+  404 `todo not found` (same API as before; the rule now lives in the domain).
+* **Activities are the persisted domain events.** Same table/collection and the same API shape; `action` is the
+  event name (`created`, `renamed`, `completed`, `reopened`, `deleted`), and the activity id is the event id
+  (UUIDv7).
