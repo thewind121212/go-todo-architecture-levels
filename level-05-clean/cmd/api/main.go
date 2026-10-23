@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 
 	httpadapter "example.com/todo/level05/internal/adapter/http"
@@ -57,7 +56,6 @@ func run(log zerolog.Logger) error {
 	)
 	activities := httpadapter.NewActivityController(usecase.NewListActivities(store.activities), log)
 
-	gin.SetMode(gin.ReleaseMode)
 	router := httpadapter.NewRouter(todos, activities, store.ping, log)
 	return server.Run(ctx, cfg.HTTPAddr, router, log)
 }

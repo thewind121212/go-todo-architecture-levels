@@ -5,7 +5,6 @@ package http
 import (
 	"context"
 	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
@@ -32,8 +31,6 @@ type (
 		Execute(ctx context.Context, in usecase.DeleteTodoInput) error
 	}
 )
-
-const defaultLimit = 20
 
 type TodoController struct {
 	create CreateTodoUseCase
@@ -80,7 +77,12 @@ func (tc *TodoController) Create(c *gin.Context) {
 }
 
 func (tc *TodoController) Get(c *gin.Context) {
-	out, err := tc.get.Execute(c.Request.Context(), usecase.GetTodoInput{ID: c.Param("id")})
+	id, err := parseID(c)
+	if err != nil {
+		writeError(c, tc.log, err)
+		return
+	}
+	out, err := tc.get.Execute(c.Request.Context(), usecase.GetTodoInput{ID: id})
 	if err != nil {
 		writeError(c, tc.log, err)
 		return
@@ -89,12 +91,7 @@ func (tc *TodoController) Get(c *gin.Context) {
 }
 
 func (tc *TodoController) List(c *gin.Context) {
-	limit, err := queryInt(c, "limit", defaultLimit)
-	if err != nil {
-		writeError(c, tc.log, err)
-		return
-	}
-	offset, err := queryInt(c, "offset", 0)
+	limit, offset, err := parsePage(c)
 	if err != nil {
 		writeError(c, tc.log, err)
 		return
@@ -113,7 +110,12 @@ func (tc *TodoController) Update(c *gin.Context) {
 		writeError(c, tc.log, errInvalidJSON)
 		return
 	}
-	in := usecase.UpdateTodoInput{ID: c.Param("id"), Title: req.Title, Completed: req.Completed}
+	id, err := parseID(c)
+	if err != nil {
+		writeError(c, tc.log, err)
+		return
+	}
+	in := usecase.UpdateTodoInput{ID: id, Title: req.Title, Completed: req.Completed}
 	out, err := tc.update.Execute(c.Request.Context(), in)
 	if err != nil {
 		writeError(c, tc.log, err)
@@ -123,22 +125,14 @@ func (tc *TodoController) Update(c *gin.Context) {
 }
 
 func (tc *TodoController) Delete(c *gin.Context) {
-	if err := tc.delete.Execute(c.Request.Context(), usecase.DeleteTodoInput{ID: c.Param("id")}); err != nil {
+	id, err := parseID(c)
+	if err != nil {
+		writeError(c, tc.log, err)
+		return
+	}
+	if err := tc.delete.Execute(c.Request.Context(), usecase.DeleteTodoInput{ID: id}); err != nil {
 		writeError(c, tc.log, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
-}
-
-// queryInt reads an optional integer query parameter. Range checks are the use case's job.
-func queryInt(c *gin.Context, key string, fallback int) (int, error) {
-	raw, ok := c.GetQuery(key)
-	if !ok {
-		return fallback, nil
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, errInvalidQuery
-	}
-	return n, nil
 }

@@ -28,6 +28,9 @@ func TestCreateTodo(t *testing.T) {
 		if got := activities.actions(); !slices.Equal(got, []entity.Action{entity.ActionCreated}) {
 			t.Errorf("activities = %v, want [created]", got)
 		}
+		if activities.items[0].CreatedAt != out.CreatedAt {
+			t.Errorf("activity created_at %v != todo created_at %v", activities.items[0].CreatedAt, out.CreatedAt)
+		}
 		if tx.calls != 1 || tx.failed {
 			t.Errorf("tx calls = %d, failed = %v; want 1, false", tx.calls, tx.failed)
 		}

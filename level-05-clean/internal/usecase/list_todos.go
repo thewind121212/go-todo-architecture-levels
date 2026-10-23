@@ -2,8 +2,6 @@ package usecase
 
 import "context"
 
-const maxLimit = 100
-
 type ListTodosInput struct {
 	Limit  int
 	Offset int
@@ -15,7 +13,8 @@ type ListTodosOutput struct {
 	Offset int
 }
 
-// ListTodos returns one page of todos, newest first.
+// ListTodos returns one page of todos, newest first. The web adapter has already range-checked
+// limit and offset, because they describe the request rather than the business.
 type ListTodos struct {
 	todos TodoRepository
 }
@@ -25,9 +24,6 @@ func NewListTodos(todos TodoRepository) *ListTodos {
 }
 
 func (uc *ListTodos) Execute(ctx context.Context, in ListTodosInput) (ListTodosOutput, error) {
-	if in.Limit < 1 || in.Limit > maxLimit || in.Offset < 0 {
-		return ListTodosOutput{}, ErrInvalidPagination
-	}
 	todos, err := uc.todos.List(ctx, in.Limit, in.Offset)
 	if err != nil {
 		return ListTodosOutput{}, err

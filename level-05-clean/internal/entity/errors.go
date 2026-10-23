@@ -6,5 +6,6 @@ import "errors"
 // without knowing which database or framework produced them.
 var (
 	ErrNotFound     = errors.New("todo not found")
-	ErrInvalidTitle = errors.New("title must be 1-200 characters")
+	ErrInvalidTitle = errors.New("title must be 1 to 200 characters")
+	ErrEmptyPatch   = errors.New("patch must set title or completed")
 )

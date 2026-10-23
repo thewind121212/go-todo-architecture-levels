@@ -11,13 +11,25 @@ import (
 )
 
 func TestUpdateTodo(t *testing.T) {
-	t.Run("empty input is rejected before the transaction", func(t *testing.T) {
-		tx := &fakeTx{}
-		uc := usecase.NewUpdateTodo(newFakeTodos(), &fakeActivities{}, tx)
+	t.Run("bad input is rejected before the transaction, even for an unknown id", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			in      usecase.UpdateTodoInput
+			wantErr error
+		}{
+			{name: "empty patch", in: usecase.UpdateTodoInput{ID: "missing"}, wantErr: entity.ErrEmptyPatch},
+			{name: "blank title", in: usecase.UpdateTodoInput{ID: "missing", Title: new(" ")}, wantErr: entity.ErrInvalidTitle},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				tx := &fakeTx{}
+				uc := usecase.NewUpdateTodo(newFakeTodos(), &fakeActivities{}, tx)
 
-		_, err := uc.Execute(context.Background(), usecase.UpdateTodoInput{ID: "any"})
-		if !errors.Is(err, usecase.ErrEmptyUpdate) || tx.calls != 0 {
-			t.Errorf("err = %v, tx calls = %d; want ErrEmptyUpdate, 0", err, tx.calls)
+				_, err := uc.Execute(context.Background(), tt.in)
+				if !errors.Is(err, tt.wantErr) || tx.calls != 0 {
+					t.Errorf("err = %v, tx calls = %d; want %v, 0", err, tx.calls, tt.wantErr)
+				}
+			})
 		}
 	})
 
@@ -36,19 +48,27 @@ func TestUpdateTodo(t *testing.T) {
 		todos, activities, tx := newFakeTodos(todo), &fakeActivities{}, &fakeTx{}
 		uc := usecase.NewUpdateTodo(todos, activities, tx)
 
-		out, err := uc.Execute(context.Background(), usecase.UpdateTodoInput{ID: todo.ID, Title: new("new"), Completed: new(true)})
+		out, err := uc.Execute(context.Background(), usecase.UpdateTodoInput{ID: todo.ID, Title: new(" new "), Completed: new(true)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if out.Title != "new" || !out.Completed {
+		if out.Title != "new" || !out.Completed || !out.UpdatedAt.After(out.CreatedAt) {
 			t.Errorf("unexpected output: %+v", out)
 		}
 		if saved := todos.items[todo.ID]; saved.Title != "new" || !saved.Completed {
 			t.Errorf("unexpected saved todo: %+v", saved)
 		}
+		if todos.locked != 1 {
+			t.Errorf("GetForUpdate calls = %d, want 1", todos.locked)
+		}
 		want := []entity.Action{entity.ActionRenamed, entity.ActionCompleted}
 		if got := activities.actions(); !slices.Equal(got, want) {
 			t.Errorf("activities = %v, want %v", got, want)
+		}
+		for _, a := range activities.items {
+			if a.CreatedAt != out.UpdatedAt {
+				t.Errorf("activity created_at %v != todo updated_at %v", a.CreatedAt, out.UpdatedAt)
+			}
 		}
 	})
 
@@ -58,22 +78,11 @@ func TestUpdateTodo(t *testing.T) {
 		uc := usecase.NewUpdateTodo(todos, activities, &fakeTx{})
 
 		out, err := uc.Execute(context.Background(), usecase.UpdateTodoInput{ID: todo.ID, Title: new(" same "), Completed: new(false)})
-		if err != nil || out.Title != "same" {
+		if err != nil || out.Title != "same" || out.UpdatedAt != todo.UpdatedAt {
 			t.Fatalf("got %+v, %v", out, err)
 		}
 		if todos.updates != 0 || len(activities.items) != 0 {
 			t.Errorf("updates = %d, activities = %d; want 0, 0", todos.updates, len(activities.items))
-		}
-	})
-
-	t.Run("invalid title fails the transaction", func(t *testing.T) {
-		todo := mustNewTodo("task")
-		todos, tx := newFakeTodos(todo), &fakeTx{}
-		uc := usecase.NewUpdateTodo(todos, &fakeActivities{}, tx)
-
-		_, err := uc.Execute(context.Background(), usecase.UpdateTodoInput{ID: todo.ID, Title: new("")})
-		if !errors.Is(err, entity.ErrInvalidTitle) || !tx.failed || todos.updates != 0 {
-			t.Errorf("err = %v, tx failed = %v, updates = %d", err, tx.failed, todos.updates)
 		}
 	})
 

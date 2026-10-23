@@ -8,13 +8,13 @@ import (
 	"github.com/rs/zerolog"
 
 	"example.com/todo/level05/internal/entity"
-	"example.com/todo/level05/internal/usecase"
 )
 
-// Request-shape errors that only the web adapter can detect.
+// These describe the HTTP request, not the business, so they belong to the web adapter.
 var (
-	errInvalidJSON  = errors.New("invalid JSON body")
-	errInvalidQuery = errors.New("limit and offset must be integers")
+	errInvalidJSON   = errors.New("invalid JSON body")
+	errInvalidLimit  = errors.New("limit must be between 1 and 100")
+	errInvalidOffset = errors.New("offset must be 0 or more")
 )
 
 // writeError is the one place that maps errors to HTTP status codes.
@@ -23,10 +23,10 @@ func writeError(c *gin.Context, log zerolog.Logger, err error) {
 	case errors.Is(err, entity.ErrNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": entity.ErrNotFound.Error()})
 	case errors.Is(err, entity.ErrInvalidTitle),
-		errors.Is(err, usecase.ErrInvalidPagination),
-		errors.Is(err, usecase.ErrEmptyUpdate),
+		errors.Is(err, entity.ErrEmptyPatch),
 		errors.Is(err, errInvalidJSON),
-		errors.Is(err, errInvalidQuery):
+		errors.Is(err, errInvalidLimit),
+		errors.Is(err, errInvalidOffset):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	default:
 		log.Error().Err(err).Str("method", c.Request.Method).Str("path", c.Request.URL.Path).Msg("request failed")

@@ -21,7 +21,7 @@ func NewListActivities(activities ActivityRepository) *ListActivities {
 }
 
 func (uc *ListActivities) Execute(ctx context.Context, in ListActivitiesInput) (ListActivitiesOutput, error) {
-	activities, err := uc.activities.ListByTodoID(ctx, in.TodoID)
+	activities, err := uc.activities.ListByTodo(ctx, in.TodoID)
 	if err != nil {
 		return ListActivitiesOutput{}, err
 	}

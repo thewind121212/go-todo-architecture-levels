@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"example.com/todo/level05/internal/entity"
 )
@@ -27,12 +28,19 @@ func (r *TodoRepository) Create(ctx context.Context, todo entity.Todo) error {
 	return nil
 }
 
-func (r *TodoRepository) FindByID(ctx context.Context, id string) (entity.Todo, error) {
-	if !isUUID(id) {
-		return entity.Todo{}, entity.ErrNotFound
-	}
+func (r *TodoRepository) Get(ctx context.Context, id string) (entity.Todo, error) {
+	return get(conn(ctx, r.db), id)
+}
+
+// GetForUpdate locks the row (SELECT ... FOR UPDATE) until the transaction ends, so two concurrent
+// PATCHes can't both see completed=false and both log "completed".
+func (r *TodoRepository) GetForUpdate(ctx context.Context, id string) (entity.Todo, error) {
+	return get(conn(ctx, r.db).Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}), id)
+}
+
+func get(db *gorm.DB, id string) (entity.Todo, error) {
 	var m todoModel
-	err := conn(ctx, r.db).First(&m, "id = ?", id).Error
+	err := db.First(&m, "id = ?", id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return entity.Todo{}, entity.ErrNotFound
 	}
@@ -69,9 +77,6 @@ func (r *TodoRepository) Update(ctx context.Context, todo entity.Todo) error {
 }
 
 func (r *TodoRepository) Delete(ctx context.Context, id string) error {
-	if !isUUID(id) {
-		return entity.ErrNotFound
-	}
 	res := conn(ctx, r.db).Delete(&todoModel{}, "id = ?", id)
 	if res.Error != nil {
 		return fmt.Errorf("delete todo: %w", res.Error)

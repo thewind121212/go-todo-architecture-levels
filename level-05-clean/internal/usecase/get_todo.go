@@ -16,7 +16,7 @@ func NewGetTodo(todos TodoRepository) *GetTodo {
 }
 
 func (uc *GetTodo) Execute(ctx context.Context, in GetTodoInput) (TodoOutput, error) {
-	todo, err := uc.todos.FindByID(ctx, in.ID)
+	todo, err := uc.todos.Get(ctx, in.ID)
 	if err != nil {
 		return TodoOutput{}, err
 	}

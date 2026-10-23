@@ -4,9 +4,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"example.com/todo/level05/internal/entity"
 )
+
+var now = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 
 func TestNewTodo(t *testing.T) {
 	tests := []struct {
@@ -22,14 +25,14 @@ func TestNewTodo(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			todo, err := entity.NewTodo(tt.title)
+			todo, err := entity.NewTodo(tt.title, now)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tt.wantErr)
 			}
 			if err != nil {
 				return
 			}
-			if todo.Title != tt.want || todo.Completed || todo.ID == "" || todo.CreatedAt.IsZero() {
+			if todo.Title != tt.want || todo.Completed || todo.ID == "" || todo.CreatedAt != now || todo.UpdatedAt != now {
 				t.Errorf("unexpected todo: %+v", todo)
 			}
 		})
@@ -37,29 +40,31 @@ func TestNewTodo(t *testing.T) {
 }
 
 func TestTodoRename(t *testing.T) {
-	todo, _ := entity.NewTodo("old")
+	todo, _ := entity.NewTodo("old", now)
+	later := now.Add(time.Minute)
 
-	if changed, err := todo.Rename(" old "); changed || err != nil {
-		t.Errorf("same title: changed = %v, err = %v; want false, nil", changed, err)
+	if changed, err := todo.Rename(" old ", later); changed || err != nil || todo.UpdatedAt != now {
+		t.Errorf("same title: changed = %v, err = %v, updated_at = %v", changed, err, todo.UpdatedAt)
 	}
-	if changed, err := todo.Rename("new"); !changed || err != nil || todo.Title != "new" {
-		t.Errorf("new title: changed = %v, err = %v, title = %q", changed, err, todo.Title)
+	if changed, err := todo.Rename("new", later); !changed || err != nil || todo.Title != "new" || todo.UpdatedAt != later {
+		t.Errorf("new title: changed = %v, err = %v, todo = %+v", changed, err, todo)
 	}
-	if _, err := todo.Rename(""); !errors.Is(err, entity.ErrInvalidTitle) {
+	if _, err := todo.Rename("", later); !errors.Is(err, entity.ErrInvalidTitle) {
 		t.Errorf("blank title: err = %v, want ErrInvalidTitle", err)
 	}
 }
 
 func TestTodoSetCompleted(t *testing.T) {
-	todo, _ := entity.NewTodo("task")
+	todo, _ := entity.NewTodo("task", now)
+	later := now.Add(time.Minute)
 
-	if _, changed := todo.SetCompleted(false); changed {
-		t.Error("false -> false should not change")
+	if _, changed := todo.SetCompleted(false, later); changed || todo.UpdatedAt != now {
+		t.Error("false -> false should not change anything")
 	}
-	if action, changed := todo.SetCompleted(true); !changed || action != entity.ActionCompleted {
-		t.Errorf("false -> true: got %q, %v", action, changed)
+	if action, changed := todo.SetCompleted(true, later); !changed || action != entity.ActionCompleted || todo.UpdatedAt != later {
+		t.Errorf("false -> true: got %q, %v, %+v", action, changed, todo)
 	}
-	if action, changed := todo.SetCompleted(false); !changed || action != entity.ActionReopened {
+	if action, changed := todo.SetCompleted(false, later); !changed || action != entity.ActionReopened {
 		t.Errorf("true -> false: got %q, %v", action, changed)
 	}
 }

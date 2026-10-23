@@ -3,8 +3,6 @@ package postgres
 import (
 	"time"
 
-	"github.com/google/uuid"
-
 	"example.com/todo/level05/internal/entity"
 )
 
@@ -51,10 +49,4 @@ func toActivityModel(a entity.Activity) activityModel {
 
 func toActivityEntity(m activityModel) entity.Activity {
 	return entity.Activity{ID: m.ID, TodoID: m.TodoID, Action: entity.Action(m.Action), CreatedAt: m.CreatedAt.UTC()}
-}
-
-// isUUID guards queries on uuid columns: Postgres rejects a malformed UUID with an error (which would
-// also abort the transaction), while to the app such an ID simply matches nothing.
-func isUUID(id string) bool {
-	return uuid.Validate(id) == nil
 }

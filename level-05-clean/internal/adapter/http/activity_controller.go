@@ -25,7 +25,12 @@ func NewActivityController(list ListActivitiesUseCase, log zerolog.Logger) *Acti
 }
 
 func (ac *ActivityController) List(c *gin.Context) {
-	out, err := ac.list.Execute(c.Request.Context(), usecase.ListActivitiesInput{TodoID: c.Param("id")})
+	id, err := parseID(c)
+	if err != nil {
+		writeError(c, ac.log, err)
+		return
+	}
+	out, err := ac.list.Execute(c.Request.Context(), usecase.ListActivitiesInput{TodoID: id})
 	if err != nil {
 		writeError(c, ac.log, err)
 		return

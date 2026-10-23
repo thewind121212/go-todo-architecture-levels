@@ -121,7 +121,7 @@ func TestCreateTodo(t *testing.T) {
 		f := fakes{create: func(context.Context, usecase.CreateTodoInput) (usecase.TodoOutput, error) {
 			return usecase.TodoOutput{}, entity.ErrInvalidTitle
 		}}
-		assertResponse(t, f.serve("POST", "/todos", `{"title":""}`), http.StatusBadRequest, `{"error":"title must be 1-200 characters"}`)
+		assertResponse(t, f.serve("POST", "/todos", `{"title":""}`), http.StatusBadRequest, `{"error":"title must be 1 to 200 characters"}`)
 	})
 
 	t.Run("unexpected error is a generic 500", func(t *testing.T) {
@@ -140,7 +140,33 @@ func TestGetTodo(t *testing.T) {
 		return sampleTodo, nil
 	}}
 	assertResponse(t, f.serve("GET", "/todos/"+sampleTodo.ID, ""), http.StatusOK, sampleTodoJSON)
-	assertResponse(t, f.serve("GET", "/todos/other", ""), http.StatusNotFound, `{"error":"todo not found"}`)
+	assertResponse(t, f.serve("GET", "/todos/0190a000-0000-7000-8000-000000000002", ""), http.StatusNotFound, `{"error":"todo not found"}`)
+}
+
+// A malformed id is a 404 on every :id route. The fakes are nil, so a use case call would panic:
+// the controller must answer before reaching one.
+func TestMalformedIDIsNotFound(t *testing.T) {
+	routes := []struct{ method, path, body string }{
+		{"GET", "/todos/not-a-uuid", ""},
+		{"PATCH", "/todos/not-a-uuid", `{"completed":true}`},
+		{"DELETE", "/todos/not-a-uuid", ""},
+		{"GET", "/todos/not-a-uuid/activities", ""},
+	}
+	for _, r := range routes {
+		t.Run(r.method+" "+r.path, func(t *testing.T) {
+			assertResponse(t, fakes{}.serve(r.method, r.path, r.body), http.StatusNotFound, `{"error":"todo not found"}`)
+		})
+	}
+}
+
+func TestIDIsCanonicalized(t *testing.T) {
+	f := fakes{get: func(_ context.Context, in usecase.GetTodoInput) (usecase.TodoOutput, error) {
+		if in.ID != sampleTodo.ID {
+			t.Errorf("id = %q, want %q", in.ID, sampleTodo.ID)
+		}
+		return sampleTodo, nil
+	}}
+	assertResponse(t, f.serve("GET", "/todos/"+strings.ToUpper(sampleTodo.ID), ""), http.StatusOK, sampleTodoJSON)
 }
 
 func TestListTodos(t *testing.T) {
@@ -162,17 +188,19 @@ func TestListTodos(t *testing.T) {
 			`{"items":[`+sampleTodoJSON+`],"limit":5,"offset":10}`)
 	})
 
-	t.Run("non-integer query is 400", func(t *testing.T) {
-		assertResponse(t, fakes{}.serve("GET", "/todos?limit=abc", ""), http.StatusBadRequest,
-			`{"error":"limit and offset must be integers"}`)
-	})
-
-	t.Run("out of range is 400", func(t *testing.T) {
-		f := fakes{list: func(context.Context, usecase.ListTodosInput) (usecase.ListTodosOutput, error) {
-			return usecase.ListTodosOutput{}, usecase.ErrInvalidPagination
-		}}
-		assertResponse(t, f.serve("GET", "/todos?limit=0", ""), http.StatusBadRequest,
-			`{"error":"limit must be 1-100 and offset must not be negative"}`)
+	t.Run("bad limit or offset is 400 before the use case runs", func(t *testing.T) {
+		tests := map[string]string{
+			"limit=0":   `{"error":"limit must be between 1 and 100"}`,
+			"limit=101": `{"error":"limit must be between 1 and 100"}`,
+			"limit=abc": `{"error":"limit must be between 1 and 100"}`,
+			"offset=-1": `{"error":"offset must be 0 or more"}`,
+			"offset=x":  `{"error":"offset must be 0 or more"}`,
+		}
+		for query, want := range tests {
+			t.Run(query, func(t *testing.T) {
+				assertResponse(t, fakes{}.serve("GET", "/todos?"+query, ""), http.StatusBadRequest, want)
+			})
+		}
 	})
 }
 
@@ -187,15 +215,17 @@ func TestUpdateTodo(t *testing.T) {
 		assertResponse(t, f.serve("PATCH", "/todos/"+sampleTodo.ID, `{"completed":true}`), http.StatusOK, sampleTodoJSON)
 	})
 
-	t.Run("empty update is 400", func(t *testing.T) {
+	t.Run("empty patch is 400", func(t *testing.T) {
 		f := fakes{update: func(context.Context, usecase.UpdateTodoInput) (usecase.TodoOutput, error) {
-			return usecase.TodoOutput{}, usecase.ErrEmptyUpdate
+			return usecase.TodoOutput{}, entity.ErrEmptyPatch
 		}}
-		assertResponse(t, f.serve("PATCH", "/todos/x", `{}`), http.StatusBadRequest, `{"error":"provide title and/or completed"}`)
+		assertResponse(t, f.serve("PATCH", "/todos/"+sampleTodo.ID, `{}`), http.StatusBadRequest,
+			`{"error":"patch must set title or completed"}`)
 	})
 
 	t.Run("wrong JSON type is 400", func(t *testing.T) {
-		assertResponse(t, fakes{}.serve("PATCH", "/todos/x", `{"completed":"yes"}`), http.StatusBadRequest, `{"error":"invalid JSON body"}`)
+		assertResponse(t, fakes{}.serve("PATCH", "/todos/"+sampleTodo.ID, `{"completed":"yes"}`), http.StatusBadRequest,
+			`{"error":"invalid JSON body"}`)
 	})
 }
 
@@ -207,15 +237,15 @@ func TestDeleteTodo(t *testing.T) {
 		return nil
 	}}
 	assertResponse(t, f.serve("DELETE", "/todos/"+sampleTodo.ID, ""), http.StatusNoContent, "")
-	assertResponse(t, f.serve("DELETE", "/todos/other", ""), http.StatusNotFound, `{"error":"todo not found"}`)
+	assertResponse(t, f.serve("DELETE", "/todos/0190a000-0000-7000-8000-000000000002", ""), http.StatusNotFound, `{"error":"todo not found"}`)
 }
 
 func TestListActivities(t *testing.T) {
 	f := fakes{listActivities: func(_ context.Context, in usecase.ListActivitiesInput) (usecase.ListActivitiesOutput, error) {
-		if in.TodoID != "none" {
+		if in.TodoID != sampleTodo.ID {
 			t.Errorf("todo id = %q", in.TodoID)
 		}
 		return usecase.ListActivitiesOutput{}, nil
 	}}
-	assertResponse(t, f.serve("GET", "/todos/none/activities", ""), http.StatusOK, `{"items":[]}`)
+	assertResponse(t, f.serve("GET", "/todos/"+sampleTodo.ID+"/activities", ""), http.StatusOK, `{"items":[]}`)
 }

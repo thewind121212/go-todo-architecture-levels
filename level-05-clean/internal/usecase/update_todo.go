@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"time"
 
 	"example.com/todo/level05/internal/entity"
 )
@@ -25,20 +26,28 @@ func NewUpdateTodo(todos TodoRepository, activities ActivityRepository, tx TxMan
 }
 
 func (uc *UpdateTodo) Execute(ctx context.Context, in UpdateTodoInput) (TodoOutput, error) {
+	// Validate the input before touching the database, so a bad patch is a 400 even for an unknown id.
 	if in.Title == nil && in.Completed == nil {
-		return TodoOutput{}, ErrEmptyUpdate
+		return TodoOutput{}, entity.ErrEmptyPatch
+	}
+	if in.Title != nil {
+		if _, err := entity.ValidateTitle(*in.Title); err != nil {
+			return TodoOutput{}, err
+		}
 	}
 
+	now := nowUTC()
 	var todo entity.Todo
-	// The read is inside the transaction too, because the changes are computed from it.
+	// Inside the transaction only the diff happens: read the current todo (locked), work out what
+	// changed, and write the todo with one activity per change.
 	err := uc.tx.WithinTx(ctx, func(ctx context.Context) error {
 		var err error
-		todo, err = uc.todos.FindByID(ctx, in.ID)
+		todo, err = uc.todos.GetForUpdate(ctx, in.ID)
 		if err != nil {
 			return err
 		}
 
-		actions, err := applyChanges(&todo, in)
+		actions, err := applyChanges(&todo, in, now)
 		if err != nil {
 			return err
 		}
@@ -50,7 +59,11 @@ func (uc *UpdateTodo) Execute(ctx context.Context, in UpdateTodoInput) (TodoOutp
 			return err
 		}
 		for _, action := range actions {
-			if err := uc.activities.Create(ctx, entity.NewActivity(todo.ID, action)); err != nil {
+			activity, err := entity.NewActivity(todo.ID, action, now)
+			if err != nil {
+				return err
+			}
+			if err := uc.activities.Create(ctx, activity); err != nil {
 				return err
 			}
 		}
@@ -62,11 +75,12 @@ func (uc *UpdateTodo) Execute(ctx context.Context, in UpdateTodoInput) (TodoOutp
 	return newTodoOutput(todo), nil
 }
 
-// applyChanges applies the requested fields and returns one action per real change, in order.
-func applyChanges(todo *entity.Todo, in UpdateTodoInput) ([]entity.Action, error) {
+// applyChanges calls the entity's methods for the requested fields and returns one action per
+// real change, renamed first.
+func applyChanges(todo *entity.Todo, in UpdateTodoInput, now time.Time) ([]entity.Action, error) {
 	var actions []entity.Action
 	if in.Title != nil {
-		renamed, err := todo.Rename(*in.Title)
+		renamed, err := todo.Rename(*in.Title, now)
 		if err != nil {
 			return nil, err
 		}
@@ -75,7 +89,7 @@ func applyChanges(todo *entity.Todo, in UpdateTodoInput) ([]entity.Action, error
 		}
 	}
 	if in.Completed != nil {
-		if action, changed := todo.SetCompleted(*in.Completed); changed {
+		if action, changed := todo.SetCompleted(*in.Completed, now); changed {
 			actions = append(actions, action)
 		}
 	}

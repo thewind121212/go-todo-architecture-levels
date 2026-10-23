@@ -27,7 +27,7 @@ func (r *ActivityRepository) Create(ctx context.Context, activity entity.Activit
 	return nil
 }
 
-func (r *ActivityRepository) ListByTodoID(ctx context.Context, todoID string) ([]entity.Activity, error) {
+func (r *ActivityRepository) ListByTodo(ctx context.Context, todoID string) ([]entity.Activity, error) {
 	// UUIDv7 strings sort by time, so _id ascending is chronological.
 	opts := options.Find().SetSort(bson.D{{Key: "_id", Value: 1}})
 	cursor, err := r.activities.Find(ctx, bson.D{{Key: "todo_id", Value: todoID}}, opts)

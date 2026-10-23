@@ -10,9 +10,9 @@ import (
 
 func TestListActivities(t *testing.T) {
 	activities := &fakeActivities{items: []entity.Activity{
-		entity.NewActivity("a", entity.ActionCreated),
-		entity.NewActivity("b", entity.ActionCreated),
-		entity.NewActivity("a", entity.ActionDeleted),
+		mustNewActivity("a", entity.ActionCreated),
+		mustNewActivity("b", entity.ActionCreated),
+		mustNewActivity("a", entity.ActionDeleted),
 	}}
 	uc := usecase.NewListActivities(activities)
 

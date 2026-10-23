@@ -28,7 +28,7 @@ func (r *TodoRepository) Create(ctx context.Context, todo entity.Todo) error {
 	return nil
 }
 
-func (r *TodoRepository) FindByID(ctx context.Context, id string) (entity.Todo, error) {
+func (r *TodoRepository) Get(ctx context.Context, id string) (entity.Todo, error) {
 	var doc todoDocument
 	err := r.todos.FindOne(ctx, bson.D{{Key: "_id", Value: id}}).Decode(&doc)
 	if errors.Is(err, mongo.ErrNoDocuments) {
@@ -38,6 +38,12 @@ func (r *TodoRepository) FindByID(ctx context.Context, id string) (entity.Todo, 
 		return entity.Todo{}, fmt.Errorf("find todo: %w", err)
 	}
 	return toTodoEntity(doc), nil
+}
+
+// GetForUpdate is a plain find: if a concurrent transaction writes the same todo, Mongo reports a
+// write conflict and WithTransaction retries.
+func (r *TodoRepository) GetForUpdate(ctx context.Context, id string) (entity.Todo, error) {
+	return r.Get(ctx, id)
 }
 
 func (r *TodoRepository) List(ctx context.Context, limit, offset int) ([]entity.Todo, error) {

@@ -3,6 +3,7 @@ package usecase_test
 import (
 	"context"
 	"errors"
+	"time"
 
 	"example.com/todo/level05/internal/entity"
 )
@@ -12,6 +13,7 @@ var errBoom = errors.New("boom")
 // fakeTodos is an in-memory TodoRepository. Set err to make every call fail.
 type fakeTodos struct {
 	items      map[string]entity.Todo
+	locked     int // calls to GetForUpdate
 	updates    int
 	listLimit  int
 	listOffset int
@@ -34,7 +36,7 @@ func (f *fakeTodos) Create(_ context.Context, todo entity.Todo) error {
 	return nil
 }
 
-func (f *fakeTodos) FindByID(_ context.Context, id string) (entity.Todo, error) {
+func (f *fakeTodos) Get(_ context.Context, id string) (entity.Todo, error) {
 	if f.err != nil {
 		return entity.Todo{}, f.err
 	}
@@ -43,6 +45,11 @@ func (f *fakeTodos) FindByID(_ context.Context, id string) (entity.Todo, error) 
 		return entity.Todo{}, entity.ErrNotFound
 	}
 	return todo, nil
+}
+
+func (f *fakeTodos) GetForUpdate(ctx context.Context, id string) (entity.Todo, error) {
+	f.locked++
+	return f.Get(ctx, id)
 }
 
 func (f *fakeTodos) List(_ context.Context, limit, offset int) ([]entity.Todo, error) {
@@ -94,7 +101,7 @@ func (f *fakeActivities) Create(_ context.Context, activity entity.Activity) err
 	return nil
 }
 
-func (f *fakeActivities) ListByTodoID(_ context.Context, todoID string) ([]entity.Activity, error) {
+func (f *fakeActivities) ListByTodo(_ context.Context, todoID string) ([]entity.Activity, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -105,6 +112,14 @@ func (f *fakeActivities) ListByTodoID(_ context.Context, todoID string) ([]entit
 		}
 	}
 	return activities, nil
+}
+
+func mustNewActivity(todoID string, action entity.Action) entity.Activity {
+	activity, err := entity.NewActivity(todoID, action, created)
+	if err != nil {
+		panic(err)
+	}
+	return activity
 }
 
 func (f *fakeActivities) actions() []entity.Action {
@@ -129,8 +144,10 @@ func (f *fakeTx) WithinTx(ctx context.Context, fn func(ctx context.Context) erro
 	return err
 }
 
+var created = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+
 func mustNewTodo(title string) entity.Todo {
-	todo, err := entity.NewTodo(title)
+	todo, err := entity.NewTodo(title, created)
 	if err != nil {
 		panic(err)
 	}

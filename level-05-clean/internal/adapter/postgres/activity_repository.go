@@ -26,10 +26,7 @@ func (r *ActivityRepository) Create(ctx context.Context, activity entity.Activit
 	return nil
 }
 
-func (r *ActivityRepository) ListByTodoID(ctx context.Context, todoID string) ([]entity.Activity, error) {
-	if !isUUID(todoID) {
-		return []entity.Activity{}, nil
-	}
+func (r *ActivityRepository) ListByTodo(ctx context.Context, todoID string) ([]entity.Activity, error) {
 	var models []activityModel
 	// UUIDv7 IDs are time-ordered, so ID ASC is chronological.
 	if err := conn(ctx, r.db).Where("todo_id = ?", todoID).Order("id ASC").Find(&models).Error; err != nil {

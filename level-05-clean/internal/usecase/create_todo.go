@@ -22,7 +22,12 @@ func NewCreateTodo(todos TodoRepository, activities ActivityRepository, tx TxMan
 }
 
 func (uc *CreateTodo) Execute(ctx context.Context, in CreateTodoInput) (TodoOutput, error) {
-	todo, err := entity.NewTodo(in.Title)
+	now := nowUTC()
+	todo, err := entity.NewTodo(in.Title, now)
+	if err != nil {
+		return TodoOutput{}, err
+	}
+	created, err := entity.NewActivity(todo.ID, entity.ActionCreated, now)
 	if err != nil {
 		return TodoOutput{}, err
 	}
@@ -32,7 +37,7 @@ func (uc *CreateTodo) Execute(ctx context.Context, in CreateTodoInput) (TodoOutp
 		if err := uc.todos.Create(ctx, todo); err != nil {
 			return err
 		}
-		return uc.activities.Create(ctx, entity.NewActivity(todo.ID, entity.ActionCreated))
+		return uc.activities.Create(ctx, created)
 	})
 	if err != nil {
 		return TodoOutput{}, err

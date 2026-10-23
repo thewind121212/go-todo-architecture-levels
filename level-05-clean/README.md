@@ -34,17 +34,18 @@ level-05-clean/
   cmd/api/main.go                    composition root: builds every concrete type by hand and wires them
   internal/
     entity/                          innermost circle; imports only the stdlib and uuid
-      todo.go                        Todo, title rules, Rename, SetCompleted
-      activity.go                    Activity and its Action values
-      errors.go                      ErrNotFound, ErrInvalidTitle
+      todo.go                        Todo, NewTodo, ValidateTitle, Rename, SetCompleted
+      activity.go                    Activity, NewActivity and the Action values
+      errors.go                      ErrNotFound, ErrInvalidTitle, ErrEmptyPatch
     usecase/                         application rules; imports only entity
       ports.go                       TodoRepository, ActivityRepository, TxManager (what the core needs)
-      errors.go                      ErrInvalidPagination, ErrEmptyUpdate
+      now.go                         nowUTC, taken once per Execute
       output.go                      TodoOutput, ActivityOutput (plain data handed outward)
       create_todo.go ... list_activities.go   one interactor per file, each with its Input/Output
       fakes_test.go                  hand-written in-memory fakes of the ports
     adapter/
-      http/                          Gin: controllers, input-port interfaces, presenters, writeError, router
+      http/                          Gin: controllers + input ports, request parsing (id, limit/offset),
+                                     presenters, writeError, router
       postgres/                      GORM models + mappers, repositories, TxManager, AutoMigrate
       mongo/                         BSON documents + mappers, repositories, TxManager, collections/index
       contract_test.go               shared integration suite every adapter must pass (incl. rollback)
@@ -58,40 +59,48 @@ level-05-clean/
 
 1. `adapter/http/router.go` routes the request to `TodoController.Update`.
 2. `adapter/http/todo_controller.go` binds the JSON into `updateTodoRequest` (pointer fields, so a missing
-   field is `nil`) and calls `UpdateTodoUseCase.Execute` with a `usecase.UpdateTodoInput`. The controller
-   only knows that one-method interface, not the concrete interactor.
-3. `usecase/update_todo.go` rejects an empty input (`ErrEmptyUpdate`), then opens a transaction with
-   `tx.WithinTx`. Inside it: `todos.FindByID`, then `applyChanges` calls the entity.
-4. `entity/todo.go`: `Rename` validates and trims the title, `SetCompleted` returns `completed` or
-   `reopened`. Each reports whether something really changed.
-5. Back in the interactor: if nothing changed, it is done. Otherwise `todos.Update` and one
-   `activities.Create` per action, all inside the same transaction.
-6. `adapter/postgres/todo_repository.go` (or `adapter/mongo/...`) maps the entity to its persistence model
-   and writes it, using the transaction found in `ctx`.
-7. The interactor returns a `usecase.TodoOutput`; `adapter/http/presenter.go` maps it to the JSON shape.
+   field is `nil`), and `parseID` in `adapter/http/request.go` turns `:id` into a canonical UUID (malformed
+   is `ErrNotFound`, so 404). It then calls `UpdateTodoUseCase.Execute` with a `usecase.UpdateTodoInput`.
+   The controller only knows that one-method interface, not the concrete interactor.
+3. `usecase/update_todo.go` validates before touching the database: an empty patch is `ErrEmptyPatch` and
+   a bad title is `ErrInvalidTitle` (via `entity.ValidateTitle`), so both are 400 even for an unknown id.
+   It takes `now := nowUTC()` once and opens a transaction with `tx.WithinTx`.
+4. Inside the transaction: `todos.GetForUpdate` (Postgres: `SELECT ... FOR UPDATE`), then `applyChanges`
+   calls the entity's methods.
+5. `entity/todo.go`: `Rename(title, now)` and `SetCompleted(completed, now)` change the todo and report
+   whether something really changed (`SetCompleted` also says `completed` or `reopened`).
+6. Back in the interactor: if nothing changed, it is done. Otherwise `todos.Update` and one
+   `activities.Create` per action, each with the same `now`, all inside the same transaction.
+7. `adapter/postgres/todo_repository.go` (or `adapter/mongo/...`) maps the entity to its row/document and
+   writes it, using the transaction found in `ctx`.
+8. The interactor returns a `usecase.TodoOutput`; `adapter/http/presenter.go` maps it to the JSON shape.
    Any error goes to `writeError` in `adapter/http/errors.go`, the one place that picks a status code.
 
 ## Where the transaction lives
 
-In the **use case interactor**. It decides what belongs together; the adapters only know how to do a
+In the **use case interactor**. It decides what belongs together; the adapters only know how to run a
 transaction (`usecase/update_todo.go`):
 
 ```go
+now := nowUTC()
 var todo entity.Todo
-// The read is inside the transaction too, because the changes are computed from it.
+// Inside the transaction only the diff happens: read the current todo (locked), work out what
+// changed, and write the todo with one activity per change.
 err := uc.tx.WithinTx(ctx, func(ctx context.Context) error {
 	var err error
-	todo, err = uc.todos.FindByID(ctx, in.ID)
+	todo, err = uc.todos.GetForUpdate(ctx, in.ID)
 	if err != nil {
 		return err
 	}
-	actions, err := applyChanges(&todo, in)
+	actions, err := applyChanges(&todo, in, now)
 	...
 	if err := uc.todos.Update(ctx, todo); err != nil {
 		return err
 	}
 	for _, action := range actions {
-		if err := uc.activities.Create(ctx, entity.NewActivity(todo.ID, action)); err != nil {
+		activity, err := entity.NewActivity(todo.ID, action, now)
+		...
+		if err := uc.activities.Create(ctx, activity); err != nil {
 			return err
 		}
 	}
@@ -101,46 +110,43 @@ err := uc.tx.WithinTx(ctx, func(ctx context.Context) error {
 
 `TxManager` is a port declared in `usecase/ports.go`. The Postgres adapter puts the `*gorm.DB` transaction
 into `ctx` and its repositories pick it up with `conn(ctx, db)`. The Mongo adapter uses
-`session.WithTransaction`, whose callback `ctx` already carries the session.
-
-The second lesson is **mapping at the boundary**. Entities have no tags; each adapter owns its own model:
-
-```go
-// internal/entity/todo.go: pure business data
-type Todo struct {
-	ID        string
-	Title     string
-	Completed bool
-	CreatedAt time.Time
-	UpdatedAt time.Time
-}
-
-// internal/adapter/postgres/models.go: storage details live here
-type todoModel struct {
-	ID        string    `gorm:"type:uuid;primaryKey"`
-	Title     string    `gorm:"not null"`
-	...
-}
-
-func toTodoEntity(m todoModel) entity.Todo {
-	return entity.Todo{ID: m.ID, Title: m.Title, Completed: m.Completed,
-		CreatedAt: m.CreatedAt.UTC(), UpdatedAt: m.UpdatedAt.UTC()} // pgx returns local time
-}
-```
-
-`adapter/mongo/documents.go` does the same with `bson` tags, and `adapter/http/presenter.go` with `json` tags.
+`session.WithTransaction`, whose callback `ctx` already carries the session. Mongo's `GetForUpdate` is a
+plain find: a concurrent writer causes a write conflict and `WithTransaction` retries.
 
 ## What changed from the previous level
 
-* Compared to L3/L4, **the business core now knows nothing about Gin, GORM or Mongo, and a test enforces it.**
-  `arch_test.go` parses the imports of `internal/entity` and `internal/usecase` and fails on anything other
-  than the standard library, uuid and the inner circles.
-* The service is split into **one interactor per use case** (`CreateTodo`, `UpdateTodo`, ...), each with
-  its own `Input` and `Output` types.
-* **Interfaces moved to the consumer.** Repository and `TxManager` ports live in `usecase/ports.go`; the
-  input ports the controllers call live next to the controllers.
-* **Entities lost their tags.** GORM models and BSON documents are separate structs with mappers.
-* **New: a `config` package** and an `infrastructure` circle for config and the HTTP server.
+Level 4 sliced the code by feature; level 5 slices it by **circle**, and makes the direction of the
+imports a rule:
+
+```
+level 4                                   level 5
+internal/todo/      todo.go service.go     internal/entity/     todo.go activity.go errors.go
+                    handler.go postgres.go internal/usecase/    ports.go + one file per use case
+                    mongo.go repository.go internal/adapter/    http/ postgres/ mongo/
+internal/activity/  (same shape)           internal/infrastructure/  config/ server/
+internal/platform/  database/ tx/ httpx/   arch_test.go
+```
+
+* **The Dependency Rule is enforced by a test.** In level 4 nothing stopped `todo/service.go` from importing
+  GORM; it just didn't. Here `arch_test.go` parses the imports of `internal/entity` and `internal/usecase`
+  and fails on anything except the standard library, uuid and the inner circles. Gin, GORM, Mongo and
+  zerolog can only appear in `adapter`, `infrastructure` and `cmd`.
+* **One use case per struct.** Level 4's `todo.Service` with `Create/Get/List/Update/Delete` methods
+  becomes `CreateTodo`, `GetTodo`, `ListTodos`, `UpdateTodo`, `DeleteTodo` and `ListActivities`, each with
+  `Execute(ctx, Input) (Output, error)` (`DeleteTodo` returns only an error). Level 4's `Patch` becomes
+  `UpdateTodoInput`: the use case's own input boundary.
+* **Controllers depend on input ports.** Level 4's `Handler` held a `*Service`; here `TodoController` holds
+  one-method interfaces (`CreateTodoUseCase`, ...) declared next to it, so its tests use tiny func fakes.
+  Presenters map `TodoOutput` to JSON.
+* **Rich entity methods.** Level 4's single `Todo.Apply(Patch)` is split into `Rename(title, now)` and
+  `SetCompleted(completed, now)`; the use case decides which to call, the entity guards its own rules.
+  The constructor is `entity.NewTodo` (not `todo.New`), because package `entity` holds more than one type.
+* **No cross-feature interface.** Level 4's `ActivityRecorder` existed because todo must not import the
+  activity feature. With layers there is no such boundary: the interactors use `ActivityRepository` directly.
+* **New: a `config` package** in `infrastructure/config`, replacing level 4's `loadConfig` in `main.go`,
+  and `infrastructure/server` for the graceful-shutdown `http.Server`.
+* Unchanged on purpose: tag-free entities with row/doc mappers in each adapter (since level 3),
+  `TxManager.WithinTx`, `GetForUpdate`, `ListByTodo`, `nowUTC`, `writeError`.
 * DI is still **manual**: `cmd/api/main.go` reads top to bottom in one screen, so a generator (Wire, level 6)
   would not pay for itself yet.
 
@@ -154,7 +160,8 @@ Pros
 * The Dependency Rule is checked by a test, not just by convention.
 
 Cons
-* More types and mapping code: entity, persistence model, use case output and JSON response for one todo.
+* More types and mapping code: entity, persistence model, use case output and JSON response for one todo,
+  plus an input port per use case.
 * More files and indirection for a CRUD app this small; a newcomer has to learn the circles first.
 * Layer-first folders spread one feature over four packages (level 4's by-feature slicing helps there).
 
@@ -169,6 +176,7 @@ export PATH=$HOME/.local/go/bin:$HOME/go/bin:$PATH
 docker compose up -d                 # at the repo root, once
 
 task run:pg                          # or: DB_DRIVER=postgres go run ./cmd/api   (listens on :8085)
+                                     # GIN_MODE=release silences Gin's debug lines
 task run:mongo                       # or: DB_DRIVER=mongo go run ./cmd/api
 
 task test                            # go test ./...                      unit + architecture tests

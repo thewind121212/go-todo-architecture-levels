@@ -23,10 +23,14 @@ func NewDeleteTodo(todos TodoRepository, activities ActivityRepository, tx TxMan
 
 // Execute returns only an error: a deleted todo has nothing left to show.
 func (uc *DeleteTodo) Execute(ctx context.Context, in DeleteTodoInput) error {
+	deleted, err := entity.NewActivity(in.ID, entity.ActionDeleted, nowUTC())
+	if err != nil {
+		return err
+	}
 	return uc.tx.WithinTx(ctx, func(ctx context.Context) error {
 		if err := uc.todos.Delete(ctx, in.ID); err != nil {
 			return err
 		}
-		return uc.activities.Create(ctx, entity.NewActivity(in.ID, entity.ActionDeleted))
+		return uc.activities.Create(ctx, deleted)
 	})
 }
