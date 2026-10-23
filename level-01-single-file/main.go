@@ -632,10 +632,20 @@ func openStore(ctx context.Context, driver string) (store, error) {
 	switch driver {
 	case "postgres":
 		dsn := getenv("POSTGRES_DSN", "postgres://todo:todo@localhost:5432/todo_l01?sslmode=disable")
-		return newPostgresStore(ctx, dsn)
+		s, err := newPostgresStore(ctx, dsn)
+		if err != nil {
+			// Return a literal nil: a nil *postgresStore wrapped in the store
+			// interface would not compare equal to nil.
+			return nil, err
+		}
+		return s, nil
 	case "mongo":
 		uri := getenv("MONGO_URI", "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true")
-		return newMongoStore(ctx, uri, getenv("MONGO_DB", "todo_l01"))
+		s, err := newMongoStore(ctx, uri, getenv("MONGO_DB", "todo_l01"))
+		if err != nil {
+			return nil, err
+		}
+		return s, nil
 	default:
 		return nil, fmt.Errorf("unknown DB_DRIVER %q: want postgres or mongo", driver)
 	}

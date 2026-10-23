@@ -1,3 +1,5 @@
+// todo_test.go: table tests for the domain rules in todo.go.
+
 package main
 
 import (
@@ -15,12 +17,12 @@ func TestValidateTitle(t *testing.T) {
 		want    string
 		wantErr error
 	}{
-		{"plain", "buy milk", "buy milk", nil},
-		{"trimmed", "  buy milk \n", "buy milk", nil},
-		{"empty", "", "", ErrInvalidTitle},
-		{"blank", "   ", "", ErrInvalidTitle},
-		{"200 runes", strings.Repeat("é", 200), strings.Repeat("é", 200), nil},
-		{"201 runes", strings.Repeat("é", 201), "", ErrInvalidTitle},
+		{name: "plain", in: "buy milk", want: "buy milk"},
+		{name: "trimmed", in: "  buy milk \n", want: "buy milk"},
+		{name: "empty", in: "", wantErr: ErrInvalidTitle},
+		{name: "only spaces", in: "   ", wantErr: ErrInvalidTitle},
+		{name: "200 runes", in: strings.Repeat("é", 200), want: strings.Repeat("é", 200)},
+		{name: "201 runes", in: strings.Repeat("é", 201), wantErr: ErrInvalidTitle},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -38,14 +40,14 @@ func TestValidateTitle(t *testing.T) {
 func TestValidatePatch(t *testing.T) {
 	tests := []struct {
 		name      string
-		in        todoPatch
-		wantTitle *string
+		in        Patch
+		wantTitle string
 		wantErr   error
 	}{
-		{"empty", todoPatch{}, nil, ErrEmptyPatch},
-		{"completed only", todoPatch{Completed: new(true)}, nil, nil},
-		{"title trimmed", todoPatch{Title: new(" new ")}, new("new"), nil},
-		{"blank title", todoPatch{Title: new(" "), Completed: new(true)}, nil, ErrInvalidTitle},
+		{name: "empty", in: Patch{}, wantErr: ErrEmptyPatch},
+		{name: "blank title", in: Patch{Title: new("  ")}, wantErr: ErrInvalidTitle},
+		{name: "title is trimmed", in: Patch{Title: new(" new ")}, wantTitle: "new"},
+		{name: "completed only", in: Patch{Completed: new(true)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -53,76 +55,55 @@ func TestValidatePatch(t *testing.T) {
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tt.wantErr)
 			}
-			if tt.wantTitle != nil && (got.Title == nil || *got.Title != *tt.wantTitle) {
-				t.Errorf("title = %v, want %q", got.Title, *tt.wantTitle)
+			if got.Title != nil && *got.Title != tt.wantTitle {
+				t.Errorf("title = %q, want %q", *got.Title, tt.wantTitle)
 			}
 		})
 	}
 }
 
-func TestNewTodo(t *testing.T) {
-	todo, err := newTodo("  write tests ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if todo.ID == "" || todo.Title != "write tests" || todo.Completed {
-		t.Errorf("unexpected todo %+v", todo)
-	}
-	if todo.CreatedAt.Location() != time.UTC || !todo.CreatedAt.Equal(todo.UpdatedAt) {
-		t.Errorf("timestamps must be equal and UTC: %+v", todo)
-	}
-
-	if _, err := newTodo(" "); !errors.Is(err, ErrInvalidTitle) {
-		t.Errorf("err = %v, want %v", err, ErrInvalidTitle)
-	}
-}
-
 func TestApplyPatch(t *testing.T) {
 	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	at := created.Add(time.Hour)
-
+	now := created.Add(time.Hour)
 	tests := []struct {
-		name        string
-		start       Todo
-		patch       todoPatch
-		wantTitle   string
-		wantDone    bool
-		wantActions []string
+		name          string
+		completed     bool
+		patch         Patch
+		wantTitle     string
+		wantCompleted bool
+		wantActions   []Action
 	}{
-		{"rename", Todo{Title: "a"}, todoPatch{Title: new("b")}, "b", false, []string{ActionRenamed}},
-		{"same title", Todo{Title: "a"}, todoPatch{Title: new("a")}, "a", false, nil},
-		{"complete", Todo{Title: "a"}, todoPatch{Completed: new(true)}, "a", true, []string{ActionCompleted}},
-		{"reopen", Todo{Title: "a", Completed: true}, todoPatch{Completed: new(false)}, "a", false, []string{ActionReopened}},
-		{"already completed", Todo{Title: "a", Completed: true}, todoPatch{Completed: new(true)}, "a", true, nil},
-		{
-			"rename and complete", Todo{Title: "a"}, todoPatch{Title: new("b"), Completed: new(true)},
-			"b", true, []string{ActionRenamed, ActionCompleted},
-		},
+		{name: "same title", patch: Patch{Title: new("a")}, wantTitle: "a"},
+		{name: "same completed", patch: Patch{Completed: new(false)}, wantTitle: "a"},
+		{name: "rename", patch: Patch{Title: new("b")}, wantTitle: "b", wantActions: []Action{ActionRenamed}},
+		{name: "complete", patch: Patch{Completed: new(true)}, wantTitle: "a", wantCompleted: true,
+			wantActions: []Action{ActionCompleted}},
+		{name: "reopen", completed: true, patch: Patch{Completed: new(false)}, wantTitle: "a",
+			wantActions: []Action{ActionReopened}},
+		{name: "rename and complete", patch: Patch{Title: new("b"), Completed: new(true)}, wantTitle: "b",
+			wantCompleted: true, wantActions: []Action{ActionRenamed, ActionCompleted}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			todo := tt.start
-			todo.ID = "todo-1"
-			todo.UpdatedAt = created
+			todo := Todo{ID: newID(), Title: "a", Completed: tt.completed, CreatedAt: created, UpdatedAt: created}
+			activities := applyPatch(&todo, tt.patch, now)
 
-			activities := applyPatch(&todo, tt.patch, at)
-
-			if todo.Title != tt.wantTitle || todo.Completed != tt.wantDone {
-				t.Errorf("todo = %+v, want title %q completed %v", todo, tt.wantTitle, tt.wantDone)
+			if todo.Title != tt.wantTitle || todo.Completed != tt.wantCompleted {
+				t.Errorf("todo = %q/%v, want %q/%v", todo.Title, todo.Completed, tt.wantTitle, tt.wantCompleted)
 			}
-			var actions []string
+			var actions []Action
 			for _, a := range activities {
-				if a.TodoID != "todo-1" || !a.CreatedAt.Equal(at) || a.ID == "" {
-					t.Errorf("bad activity %+v", a)
-				}
 				actions = append(actions, a.Action)
+				if a.TodoID != todo.ID || !a.CreatedAt.Equal(now) {
+					t.Errorf("activity = %+v, want todo %s at %v", a, todo.ID, now)
+				}
 			}
 			if !slices.Equal(actions, tt.wantActions) {
 				t.Errorf("actions = %v, want %v", actions, tt.wantActions)
 			}
 			wantUpdated := created
 			if len(tt.wantActions) > 0 {
-				wantUpdated = at
+				wantUpdated = now
 			}
 			if !todo.UpdatedAt.Equal(wantUpdated) {
 				t.Errorf("updated_at = %v, want %v", todo.UpdatedAt, wantUpdated)

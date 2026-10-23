@@ -1,11 +1,11 @@
+// store_postgres.go: the Postgres store (GORM). Each write method owns its transaction.
+
 package main
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
-	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -17,63 +17,38 @@ type postgresStore struct {
 	db *gorm.DB
 }
 
-func newPostgresStore(dsn string) (*postgresStore, error) {
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: logger.New(log.Default(), logger.Config{
-			SlowThreshold:             200 * time.Millisecond,
-			LogLevel:                  logger.Warn,
-			IgnoreRecordNotFoundError: true, // a 404 is not worth a log line
-		}),
-	})
+func newPostgresStore(ctx context.Context, dsn string) (*postgresStore, error) {
+	// Silent: errors are returned to the caller, and the HTTP layer logs the ones that matter.
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
-	if err := db.AutoMigrate(&Todo{}, &Activity{}); err != nil {
-		return nil, fmt.Errorf("migrate: %w", err)
+	if err := db.WithContext(ctx).AutoMigrate(&Todo{}, &Activity{}); err != nil {
+		return nil, fmt.Errorf("migrate postgres: %w", err)
 	}
 	return &postgresStore{db: db}, nil
 }
 
-// AfterFind is a GORM hook. The pgx driver returns timestamptz in the
-// machine's local zone, but the API promises UTC.
-func (t *Todo) AfterFind(*gorm.DB) error {
-	t.CreatedAt = t.CreatedAt.UTC()
-	t.UpdatedAt = t.UpdatedAt.UTC()
-	return nil
-}
-
-// AfterFind: see Todo.AfterFind.
-func (a *Activity) AfterFind(*gorm.DB) error {
-	a.CreatedAt = a.CreatedAt.UTC()
-	return nil
-}
-
-// inTx is where every Postgres transaction starts. GORM commits when fn
-// returns nil and rolls back when it returns an error.
+// inTx runs fn in one database transaction: commit if fn returns nil, roll back otherwise.
 func (s *postgresStore) inTx(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return s.db.WithContext(ctx).Transaction(fn)
 }
 
-func (s *postgresStore) Create(ctx context.Context, title string) (Todo, error) {
-	todo, err := newTodo(title)
-	if err != nil {
-		return Todo{}, err
-	}
-	created := newActivity(todo.ID, ActionCreated, todo.CreatedAt)
-
-	err = s.inTx(ctx, func(tx *gorm.DB) error {
-		if err := tx.Create(&todo).Error; err != nil {
+func (s *postgresStore) Create(ctx context.Context, t Todo) error {
+	return s.inTx(ctx, func(tx *gorm.DB) error {
+		if err := tx.Create(&t).Error; err != nil {
 			return fmt.Errorf("insert todo: %w", err)
 		}
-		if err := tx.Create(&created).Error; err != nil {
+		a := newActivity(t.ID, ActionCreated, t.CreatedAt)
+		if err := tx.Create(&a).Error; err != nil {
 			return fmt.Errorf("insert activity: %w", err)
 		}
 		return nil
 	})
-	if err != nil {
-		return Todo{}, err
-	}
-	return todo, nil
+}
+
+func (s *postgresStore) Get(ctx context.Context, id string) (Todo, error) {
+	return findTodo(s.db.WithContext(ctx), id)
 }
 
 func (s *postgresStore) List(ctx context.Context, limit, offset int) ([]Todo, error) {
@@ -82,43 +57,27 @@ func (s *postgresStore) List(ctx context.Context, limit, offset int) ([]Todo, er
 	if err != nil {
 		return nil, fmt.Errorf("list todos: %w", err)
 	}
+	for i := range todos {
+		todos[i] = todoInUTC(todos[i])
+	}
 	return todos, nil
 }
 
-func (s *postgresStore) Get(ctx context.Context, id string) (Todo, error) {
-	var todo Todo
-	if err := s.db.WithContext(ctx).First(&todo, "id = ?", id).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return Todo{}, ErrNotFound
-		}
-		return Todo{}, fmt.Errorf("get todo: %w", err)
-	}
-	return todo, nil
-}
-
-func (s *postgresStore) Update(ctx context.Context, id string, p todoPatch) (Todo, error) {
-	p, err := validatePatch(p)
-	if err != nil {
-		return Todo{}, err
-	}
-
-	var todo Todo
-	err = s.inTx(ctx, func(tx *gorm.DB) error {
-		// FOR UPDATE locks the row, so two concurrent PATCHes cannot both
-		// see "not completed" and both log a "completed" activity.
-		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&todo, "id = ?", id).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrNotFound
-		}
+func (s *postgresStore) Update(ctx context.Context, id string, p Patch) (Todo, error) {
+	var t Todo
+	err := s.inTx(ctx, func(tx *gorm.DB) error {
+		// FOR UPDATE locks the row until commit, so two concurrent PATCHes
+		// can't both see "not completed" and both log a "completed" activity.
+		var err error
+		t, err = findTodo(tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}), id)
 		if err != nil {
-			return fmt.Errorf("get todo: %w", err)
+			return err
 		}
-
-		activities := applyPatch(&todo, p, now())
+		activities := applyPatch(&t, p, nowUTC())
 		if len(activities) == 0 {
 			return nil
 		}
-		if err := tx.Save(&todo).Error; err != nil {
+		if err := tx.Save(&t).Error; err != nil {
 			return fmt.Errorf("update todo: %w", err)
 		}
 		if err := tx.Create(&activities).Error; err != nil {
@@ -129,32 +88,34 @@ func (s *postgresStore) Update(ctx context.Context, id string, p todoPatch) (Tod
 	if err != nil {
 		return Todo{}, err
 	}
-	return todo, nil
+	return t, nil
 }
 
 func (s *postgresStore) Delete(ctx context.Context, id string) error {
-	deleted := newActivity(id, ActionDeleted, now())
-
 	return s.inTx(ctx, func(tx *gorm.DB) error {
-		res := tx.Delete(&Todo{}, "id = ?", id)
+		res := tx.Where("id = ?", id).Delete(&Todo{})
 		if res.Error != nil {
 			return fmt.Errorf("delete todo: %w", res.Error)
 		}
 		if res.RowsAffected == 0 {
 			return ErrNotFound
 		}
-		if err := tx.Create(&deleted).Error; err != nil {
+		a := newActivity(id, ActionDeleted, nowUTC())
+		if err := tx.Create(&a).Error; err != nil {
 			return fmt.Errorf("insert activity: %w", err)
 		}
 		return nil
 	})
 }
 
-func (s *postgresStore) Activities(ctx context.Context, todoID string) ([]Activity, error) {
+func (s *postgresStore) ListActivities(ctx context.Context, todoID string) ([]Activity, error) {
 	activities := []Activity{}
 	err := s.db.WithContext(ctx).Where("todo_id = ?", todoID).Order("id ASC").Find(&activities).Error
 	if err != nil {
 		return nil, fmt.Errorf("list activities: %w", err)
+	}
+	for i := range activities {
+		activities[i].CreatedAt = activities[i].CreatedAt.UTC()
 	}
 	return activities, nil
 }
@@ -164,8 +125,26 @@ func (s *postgresStore) Ping(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("get sql db: %w", err)
 	}
-	if err := sqlDB.PingContext(ctx); err != nil {
-		return fmt.Errorf("ping postgres: %w", err)
+	return sqlDB.PingContext(ctx)
+}
+
+// findTodo works on a plain or a transactional *gorm.DB, so Get and Update share it.
+func findTodo(db *gorm.DB, id string) (Todo, error) {
+	var t Todo
+	err := db.First(&t, "id = ?", id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return Todo{}, ErrNotFound
 	}
-	return nil
+	if err != nil {
+		return Todo{}, fmt.Errorf("find todo: %w", err)
+	}
+	return todoInUTC(t), nil
+}
+
+// todoInUTC is needed because pgx returns timestamps in the process's local
+// time zone, while the API promises UTC.
+func todoInUTC(t Todo) Todo {
+	t.CreatedAt = t.CreatedAt.UTC()
+	t.UpdatedAt = t.UpdatedAt.UTC()
+	return t
 }

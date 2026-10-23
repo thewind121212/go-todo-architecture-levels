@@ -1,3 +1,5 @@
+// store_mongo.go: the Mongo store (driver v2). Each write method owns its transaction.
+
 package main
 
 import (
@@ -23,75 +25,65 @@ func newMongoStore(ctx context.Context, uri, dbName string) (*mongoStore, error)
 		return nil, fmt.Errorf("connect mongo: %w", err)
 	}
 	db := client.Database(dbName)
-	if err := setupMongo(ctx, db); err != nil {
-		_ = client.Disconnect(ctx)
-		return nil, err
-	}
-	return &mongoStore{
-		client:     client,
-		todos:      db.Collection("todos"),
-		activities: db.Collection("activities"),
-	}, nil
-}
-
-// setupMongo creates the collections up front because creating a collection
-// inside a multi-document transaction is not supported on every Mongo version.
-func setupMongo(ctx context.Context, db *mongo.Database) error {
+	// Collections are created up front because creating one inside a
+	// multi-document transaction is not supported on every Mongo version.
 	existing, err := db.ListCollectionNames(ctx, bson.D{})
 	if err != nil {
-		return fmt.Errorf("list collections: %w", err)
+		return nil, fmt.Errorf("list collections: %w", err)
 	}
 	for _, name := range []string{"todos", "activities"} {
 		if slices.Contains(existing, name) {
 			continue
 		}
 		if err := db.CreateCollection(ctx, name); err != nil {
-			return fmt.Errorf("create collection %s: %w", name, err)
+			return nil, fmt.Errorf("create collection %s: %w", name, err)
 		}
 	}
+	activities := db.Collection("activities")
 	index := mongo.IndexModel{Keys: bson.D{{Key: "todo_id", Value: 1}}}
-	if _, err := db.Collection("activities").Indexes().CreateOne(ctx, index); err != nil {
-		return fmt.Errorf("create activities index: %w", err)
+	if _, err := activities.Indexes().CreateOne(ctx, index); err != nil {
+		return nil, fmt.Errorf("create activities index: %w", err)
 	}
-	return nil
+	return &mongoStore{client: client, todos: db.Collection("todos"), activities: activities}, nil
 }
 
-// inTx is where every Mongo transaction starts. fn must use the ctx it is
-// given: that ctx carries the session, which is what puts a collection call
-// inside the transaction. WithTransaction may retry fn on transient errors.
+// inTx runs fn in one multi-document transaction. fn must pass the ctx it is
+// given to every collection call: that ctx carries the session, and the
+// session is what puts the call inside the transaction.
 func (s *mongoStore) inTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	session, err := s.client.StartSession()
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
 	defer session.EndSession(ctx)
-
 	_, err = session.WithTransaction(ctx, func(ctx context.Context) (any, error) {
 		return nil, fn(ctx)
 	})
 	return err
 }
 
-func (s *mongoStore) Create(ctx context.Context, title string) (Todo, error) {
-	todo, err := newTodo(title)
-	if err != nil {
-		return Todo{}, err
-	}
-	created := newActivity(todo.ID, ActionCreated, todo.CreatedAt)
-
-	err = s.inTx(ctx, func(ctx context.Context) error {
-		if _, err := s.todos.InsertOne(ctx, todo); err != nil {
+func (s *mongoStore) Create(ctx context.Context, t Todo) error {
+	return s.inTx(ctx, func(ctx context.Context) error {
+		if _, err := s.todos.InsertOne(ctx, t); err != nil {
 			return fmt.Errorf("insert todo: %w", err)
 		}
-		if _, err := s.activities.InsertOne(ctx, created); err != nil {
+		if _, err := s.activities.InsertOne(ctx, newActivity(t.ID, ActionCreated, t.CreatedAt)); err != nil {
 			return fmt.Errorf("insert activity: %w", err)
 		}
 		return nil
 	})
-	if err != nil {
-		return Todo{}, err
+}
+
+func (s *mongoStore) Get(ctx context.Context, id string) (Todo, error) {
+	var t Todo
+	err := s.todos.FindOne(ctx, bson.D{{Key: "_id", Value: id}}).Decode(&t)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return Todo{}, ErrNotFound
 	}
-	return todo, nil
+	if err != nil {
+		return Todo{}, fmt.Errorf("find todo: %w", err)
+	}
+	return t, nil
 }
 
 func (s *mongoStore) List(ctx context.Context, limit, offset int) ([]Todo, error) {
@@ -110,40 +102,21 @@ func (s *mongoStore) List(ctx context.Context, limit, offset int) ([]Todo, error
 	return todos, nil
 }
 
-func (s *mongoStore) Get(ctx context.Context, id string) (Todo, error) {
-	var todo Todo
-	if err := s.todos.FindOne(ctx, bson.M{"_id": id}).Decode(&todo); err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return Todo{}, ErrNotFound
-		}
-		return Todo{}, fmt.Errorf("get todo: %w", err)
-	}
-	return todo, nil
-}
-
-func (s *mongoStore) Update(ctx context.Context, id string, p todoPatch) (Todo, error) {
-	p, err := validatePatch(p)
-	if err != nil {
-		return Todo{}, err
-	}
-
-	var todo Todo
-	err = s.inTx(ctx, func(ctx context.Context) error {
-		// A concurrent write to the same todo makes Mongo abort this
-		// transaction with a write conflict; WithTransaction then retries fn.
-		err := s.todos.FindOne(ctx, bson.M{"_id": id}).Decode(&todo)
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return ErrNotFound
-		}
+func (s *mongoStore) Update(ctx context.Context, id string, p Patch) (Todo, error) {
+	var t Todo
+	// If another transaction changes this todo first, Mongo reports a write
+	// conflict and WithTransaction reruns fn, so a stale read is never committed.
+	err := s.inTx(ctx, func(ctx context.Context) error {
+		var err error
+		t, err = s.Get(ctx, id)
 		if err != nil {
-			return fmt.Errorf("get todo: %w", err)
+			return err
 		}
-
-		activities := applyPatch(&todo, p, now())
+		activities := applyPatch(&t, p, nowUTC())
 		if len(activities) == 0 {
 			return nil
 		}
-		if _, err := s.todos.ReplaceOne(ctx, bson.M{"_id": id}, todo); err != nil {
+		if _, err := s.todos.ReplaceOne(ctx, bson.D{{Key: "_id", Value: t.ID}}, t); err != nil {
 			return fmt.Errorf("update todo: %w", err)
 		}
 		if _, err := s.activities.InsertMany(ctx, activities); err != nil {
@@ -154,30 +127,28 @@ func (s *mongoStore) Update(ctx context.Context, id string, p todoPatch) (Todo, 
 	if err != nil {
 		return Todo{}, err
 	}
-	return todo, nil
+	return t, nil
 }
 
 func (s *mongoStore) Delete(ctx context.Context, id string) error {
-	deleted := newActivity(id, ActionDeleted, now())
-
 	return s.inTx(ctx, func(ctx context.Context) error {
-		res, err := s.todos.DeleteOne(ctx, bson.M{"_id": id})
+		res, err := s.todos.DeleteOne(ctx, bson.D{{Key: "_id", Value: id}})
 		if err != nil {
 			return fmt.Errorf("delete todo: %w", err)
 		}
 		if res.DeletedCount == 0 {
 			return ErrNotFound
 		}
-		if _, err := s.activities.InsertOne(ctx, deleted); err != nil {
+		if _, err := s.activities.InsertOne(ctx, newActivity(id, ActionDeleted, nowUTC())); err != nil {
 			return fmt.Errorf("insert activity: %w", err)
 		}
 		return nil
 	})
 }
 
-func (s *mongoStore) Activities(ctx context.Context, todoID string) ([]Activity, error) {
+func (s *mongoStore) ListActivities(ctx context.Context, todoID string) ([]Activity, error) {
 	opts := options.Find().SetSort(bson.D{{Key: "_id", Value: 1}})
-	cursor, err := s.activities.Find(ctx, bson.M{"todo_id": todoID}, opts)
+	cursor, err := s.activities.Find(ctx, bson.D{{Key: "todo_id", Value: todoID}}, opts)
 	if err != nil {
 		return nil, fmt.Errorf("list activities: %w", err)
 	}
@@ -189,8 +160,5 @@ func (s *mongoStore) Activities(ctx context.Context, todoID string) ([]Activity,
 }
 
 func (s *mongoStore) Ping(ctx context.Context) error {
-	if err := s.client.Ping(ctx, nil); err != nil {
-		return fmt.Errorf("ping mongo: %w", err)
-	}
-	return nil
+	return s.client.Ping(ctx, nil)
 }

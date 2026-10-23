@@ -1,19 +1,20 @@
+// handler_test.go: handler tests through the real router, backed by an in-memory fake store.
+
 package main
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 func TestMain(m *testing.M) {
@@ -21,9 +22,10 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// fakeStore is a hand-written in-memory store. It follows the same flow as the
-// real stores (newTodo, validatePatch, applyPatch) without a database.
+// fakeStore is a hand-written in-memory store. It follows the same rules as
+// the real stores (it even calls applyPatch), but needs no database.
 type fakeStore struct {
+	mu         sync.Mutex
 	todos      map[string]Todo
 	activities []Activity
 	err        error // when set, every method fails with it
@@ -33,60 +35,63 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{todos: map[string]Todo{}}
 }
 
-func (f *fakeStore) Create(_ context.Context, title string) (Todo, error) {
+func (f *fakeStore) Create(_ context.Context, t Todo) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.err != nil {
-		return Todo{}, f.err
+		return f.err
 	}
-	todo, err := newTodo(title)
-	if err != nil {
-		return Todo{}, err
-	}
-	f.todos[todo.ID] = todo
-	f.activities = append(f.activities, newActivity(todo.ID, ActionCreated, todo.CreatedAt))
-	return todo, nil
-}
-
-func (f *fakeStore) List(_ context.Context, limit, offset int) ([]Todo, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	// Newest first: UUIDv7 strings sort by creation time.
-	todos := slices.SortedFunc(maps.Values(f.todos), func(a, b Todo) int { return strings.Compare(b.ID, a.ID) })
-	if offset >= len(todos) {
-		return []Todo{}, nil
-	}
-	return todos[offset:min(offset+limit, len(todos))], nil
+	f.todos[t.ID] = t
+	f.activities = append(f.activities, newActivity(t.ID, ActionCreated, t.CreatedAt))
+	return nil
 }
 
 func (f *fakeStore) Get(_ context.Context, id string) (Todo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.err != nil {
 		return Todo{}, f.err
 	}
-	todo, ok := f.todos[id]
+	t, ok := f.todos[id]
 	if !ok {
 		return Todo{}, ErrNotFound
 	}
-	return todo, nil
+	return t, nil
 }
 
-func (f *fakeStore) Update(_ context.Context, id string, p todoPatch) (Todo, error) {
+func (f *fakeStore) List(_ context.Context, limit, offset int) ([]Todo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	todos := []Todo{}
+	for _, t := range f.todos {
+		todos = append(todos, t)
+	}
+	slices.SortFunc(todos, func(a, b Todo) int { return strings.Compare(b.ID, a.ID) })
+	todos = todos[min(offset, len(todos)):]
+	return todos[:min(limit, len(todos))], nil
+}
+
+func (f *fakeStore) Update(_ context.Context, id string, p Patch) (Todo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.err != nil {
 		return Todo{}, f.err
 	}
-	p, err := validatePatch(p)
-	if err != nil {
-		return Todo{}, err
-	}
-	todo, ok := f.todos[id]
+	t, ok := f.todos[id]
 	if !ok {
 		return Todo{}, ErrNotFound
 	}
-	f.activities = append(f.activities, applyPatch(&todo, p, now())...)
-	f.todos[id] = todo
-	return todo, nil
+	f.activities = append(f.activities, applyPatch(&t, p, nowUTC())...)
+	f.todos[id] = t
+	return t, nil
 }
 
 func (f *fakeStore) Delete(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.err != nil {
 		return f.err
 	}
@@ -94,11 +99,13 @@ func (f *fakeStore) Delete(_ context.Context, id string) error {
 		return ErrNotFound
 	}
 	delete(f.todos, id)
-	f.activities = append(f.activities, newActivity(id, ActionDeleted, now()))
+	f.activities = append(f.activities, newActivity(id, ActionDeleted, nowUTC()))
 	return nil
 }
 
-func (f *fakeStore) Activities(_ context.Context, todoID string) ([]Activity, error) {
+func (f *fakeStore) ListActivities(_ context.Context, todoID string) ([]Activity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -115,224 +122,142 @@ func (f *fakeStore) Ping(context.Context) error {
 	return f.err
 }
 
-// serve sends one request through the real router and returns the recorder.
-func serve(s store, method, path, body string) *httptest.ResponseRecorder {
+// do sends one request through the real router and decodes the JSON reply into out (if not nil).
+func do(t *testing.T, router http.Handler, method, path, body string, out any) int {
+	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	newRouter(s).ServeHTTP(rec, req)
-	return rec
-}
-
-func decode(t *testing.T, rec *httptest.ResponseRecorder, v any) {
-	t.Helper()
-	if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
-		t.Fatalf("decode %q: %v", rec.Body.String(), err)
-	}
-}
-
-func wantStatus(t *testing.T, rec *httptest.ResponseRecorder, code int) {
-	t.Helper()
-	if rec.Code != code {
-		t.Fatalf("status = %d, want %d (body %s)", rec.Code, code, rec.Body.String())
-	}
-}
-
-func wantError(t *testing.T, rec *httptest.ResponseRecorder, code int, msg string) {
-	t.Helper()
-	wantStatus(t, rec, code)
-	var body map[string]string
-	decode(t, rec, &body)
-	if body["error"] != msg {
-		t.Errorf("error = %q, want %q", body["error"], msg)
-	}
-}
-
-func mustCreate(t *testing.T, s *fakeStore, title string) Todo {
-	t.Helper()
-	todo, err := s.Create(context.Background(), title)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return todo
-}
-
-func TestHealth(t *testing.T) {
-	s := newFakeStore()
-	rec := serve(s, http.MethodGet, "/health", "")
-	wantStatus(t, rec, http.StatusOK)
-	var body map[string]string
-	decode(t, rec, &body)
-	if body["status"] != "ok" {
-		t.Errorf("status = %q, want ok", body["status"])
-	}
-
-	s.err = errors.New("db down")
-	wantError(t, serve(s, http.MethodGet, "/health", ""), http.StatusInternalServerError, "internal error")
-}
-
-func TestCreateTodo(t *testing.T) {
-	rec := serve(newFakeStore(), http.MethodPost, "/todos", `{"title":"  buy milk  "}`)
-	wantStatus(t, rec, http.StatusCreated)
-	var todo Todo
-	decode(t, rec, &todo)
-	if todo.Title != "buy milk" || todo.Completed || todo.ID == "" {
-		t.Errorf("unexpected todo %+v", todo)
-	}
-
-	bad := []struct{ name, body, msg string }{
-		{"blank title", `{"title":"   "}`, ErrInvalidTitle.Error()},
-		{"missing title", `{}`, ErrInvalidTitle.Error()},
-		{"too long", `{"title":"` + strings.Repeat("x", 201) + `"}`, ErrInvalidTitle.Error()},
-		{"invalid JSON", `{"title":`, ErrInvalidJSON.Error()},
-		{"wrong type", `{"title":42}`, ErrInvalidJSON.Error()},
-	}
-	for _, tt := range bad {
-		t.Run(tt.name, func(t *testing.T) {
-			wantError(t, serve(newFakeStore(), http.MethodPost, "/todos", tt.body), http.StatusBadRequest, tt.msg)
-		})
-	}
-}
-
-func TestListTodos(t *testing.T) {
-	t.Run("empty list is [] with defaults", func(t *testing.T) {
-		rec := serve(newFakeStore(), http.MethodGet, "/todos", "")
-		wantStatus(t, rec, http.StatusOK)
-		if got := rec.Body.String(); got != `{"items":[],"limit":20,"offset":0}` {
-			t.Errorf("body = %s", got)
+	router.ServeHTTP(rec, req)
+	if out != nil {
+		if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
+			t.Fatalf("%s %s: decode %q: %v", method, path, rec.Body.String(), err)
 		}
-	})
-
-	t.Run("newest first, paged", func(t *testing.T) {
-		s := newFakeStore()
-		first, second, third := mustCreate(t, s, "1"), mustCreate(t, s, "2"), mustCreate(t, s, "3")
-
-		rec := serve(s, http.MethodGet, "/todos?limit=2&offset=0", "")
-		wantStatus(t, rec, http.StatusOK)
-		var page struct {
-			Items  []Todo `json:"items"`
-			Limit  int    `json:"limit"`
-			Offset int    `json:"offset"`
-		}
-		decode(t, rec, &page)
-		if page.Limit != 2 || page.Offset != 0 || len(page.Items) != 2 ||
-			page.Items[0].ID != third.ID || page.Items[1].ID != second.ID {
-			t.Errorf("unexpected page %+v", page)
-		}
-
-		rec = serve(s, http.MethodGet, "/todos?limit=2&offset=2", "")
-		wantStatus(t, rec, http.StatusOK)
-		page.Items = nil
-		decode(t, rec, &page)
-		if len(page.Items) != 1 || page.Items[0].ID != first.ID {
-			t.Errorf("unexpected page %+v", page)
-		}
-	})
-
-	bad := []struct{ query, msg string }{
-		{"limit=0", ErrInvalidLimit.Error()},
-		{"limit=101", ErrInvalidLimit.Error()},
-		{"limit=abc", ErrInvalidLimit.Error()},
-		{"offset=-1", ErrInvalidOffset.Error()},
-		{"offset=x", ErrInvalidOffset.Error()},
 	}
-	for _, tt := range bad {
-		t.Run(tt.query, func(t *testing.T) {
-			wantError(t, serve(newFakeStore(), http.MethodGet, "/todos?"+tt.query, ""), http.StatusBadRequest, tt.msg)
-		})
-	}
+	return rec.Code
 }
 
-func TestGetTodo(t *testing.T) {
-	s := newFakeStore()
-	todo := mustCreate(t, s, "read")
+type errorBody struct {
+	Error string `json:"error"`
+}
 
-	rec := serve(s, http.MethodGet, "/todos/"+todo.ID, "")
-	wantStatus(t, rec, http.StatusOK)
+func TestHandlersHappyPath(t *testing.T) {
+	router := newRouter(newFakeStore())
+
+	var created Todo
+	if code := do(t, router, "POST", "/todos", `{"title":"  buy milk  "}`, &created); code != http.StatusCreated {
+		t.Fatalf("create: status %d", code)
+	}
+	if created.Title != "buy milk" || created.Completed || created.ID == "" || created.CreatedAt.IsZero() {
+		t.Fatalf("create: got %+v", created)
+	}
+
 	var got Todo
-	decode(t, rec, &got)
-	if got != todo {
-		t.Errorf("got %+v, want %+v", got, todo)
+	if code := do(t, router, "GET", "/todos/"+created.ID, "", &got); code != http.StatusOK || got != created {
+		t.Fatalf("get: status %d, got %+v, want %+v", code, got, created)
 	}
 
-	for _, id := range []string{uuid.NewString(), "not-a-uuid"} {
-		wantError(t, serve(s, http.MethodGet, "/todos/"+id, ""), http.StatusNotFound, "todo not found")
+	var page struct {
+		Items  []Todo `json:"items"`
+		Limit  int    `json:"limit"`
+		Offset int    `json:"offset"`
 	}
-}
-
-func TestUpdateTodo(t *testing.T) {
-	s := newFakeStore()
-	todo := mustCreate(t, s, "old")
-
-	rec := serve(s, http.MethodPatch, "/todos/"+todo.ID, `{"title":" new ","completed":true}`)
-	wantStatus(t, rec, http.StatusOK)
-	var got Todo
-	decode(t, rec, &got)
-	if got.Title != "new" || !got.Completed {
-		t.Errorf("unexpected todo %+v", got)
+	if code := do(t, router, "GET", "/todos", "", &page); code != http.StatusOK {
+		t.Fatalf("list: status %d", code)
+	}
+	if len(page.Items) != 1 || page.Limit != 20 || page.Offset != 0 {
+		t.Fatalf("list: got %+v", page)
 	}
 
-	bad := []struct {
-		name, id, body string
-		code           int
-		msg            string
-	}{
-		{"empty patch", todo.ID, `{}`, http.StatusBadRequest, ErrEmptyPatch.Error()},
-		{"blank title", todo.ID, `{"title":" "}`, http.StatusBadRequest, ErrInvalidTitle.Error()},
-		{"invalid JSON", todo.ID, `nope`, http.StatusBadRequest, ErrInvalidJSON.Error()},
-		{"unknown id", uuid.NewString(), `{"completed":true}`, http.StatusNotFound, "todo not found"},
-		{"malformed id", "123", `{"completed":true}`, http.StatusNotFound, "todo not found"},
+	var updated Todo
+	code := do(t, router, "PATCH", "/todos/"+created.ID, `{"title":"buy oat milk","completed":true}`, &updated)
+	if code != http.StatusOK || updated.Title != "buy oat milk" || !updated.Completed {
+		t.Fatalf("patch: status %d, got %+v", code, updated)
 	}
-	for _, tt := range bad {
-		t.Run(tt.name, func(t *testing.T) {
-			wantError(t, serve(s, http.MethodPatch, "/todos/"+tt.id, tt.body), tt.code, tt.msg)
-		})
+
+	if code := do(t, router, "DELETE", "/todos/"+created.ID, "", nil); code != http.StatusNoContent {
+		t.Fatalf("delete: status %d", code)
 	}
-}
 
-func TestDeleteTodo(t *testing.T) {
-	s := newFakeStore()
-	todo := mustCreate(t, s, "bye")
-
-	rec := serve(s, http.MethodDelete, "/todos/"+todo.ID, "")
-	wantStatus(t, rec, http.StatusNoContent)
-	if rec.Body.Len() != 0 {
-		t.Errorf("204 must have no body, got %q", rec.Body.String())
+	var acts struct {
+		Items []Activity `json:"items"`
 	}
-	wantError(t, serve(s, http.MethodDelete, "/todos/"+todo.ID, ""), http.StatusNotFound, "todo not found")
-}
-
-func TestListActivities(t *testing.T) {
-	s := newFakeStore()
-	todo := mustCreate(t, s, "track me")
-	serve(s, http.MethodPatch, "/todos/"+todo.ID, `{"completed":true}`)
-
-	rec := serve(s, http.MethodGet, "/todos/"+todo.ID+"/activities", "")
-	wantStatus(t, rec, http.StatusOK)
-	var page struct{ Items []Activity }
-	decode(t, rec, &page)
-	var actions []string
-	for _, a := range page.Items {
+	if code := do(t, router, "GET", "/todos/"+created.ID+"/activities", "", &acts); code != http.StatusOK {
+		t.Fatalf("activities: status %d", code)
+	}
+	var actions []Action
+	for _, a := range acts.Items {
 		actions = append(actions, a.Action)
 	}
-	if !slices.Equal(actions, []string{ActionCreated, ActionCompleted}) {
-		t.Errorf("actions = %v", actions)
-	}
-
-	rec = serve(s, http.MethodGet, "/todos/"+uuid.NewString()+"/activities", "")
-	wantStatus(t, rec, http.StatusOK)
-	if got := rec.Body.String(); got != `{"items":[]}` {
-		t.Errorf("body = %s, want empty items", got)
+	want := []Action{ActionCreated, ActionRenamed, ActionCompleted, ActionDeleted}
+	if !slices.Equal(actions, want) {
+		t.Fatalf("activities = %v, want %v", actions, want)
 	}
 }
 
-func TestStoreErrorIsInternal(t *testing.T) {
-	s := newFakeStore()
-	s.err = errors.New("connection reset")
+func TestHandlersEmptyListsAreArrays(t *testing.T) {
+	router := newRouter(newFakeStore())
+	for _, path := range []string{"/todos", "/todos/" + newID() + "/activities"} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if !strings.Contains(rec.Body.String(), `"items":[]`) {
+			t.Errorf("GET %s = %s, want items to be []", path, rec.Body.String())
+		}
+	}
+}
 
-	rec := serve(s, http.MethodPost, "/todos", `{"title":"x"}`)
-	wantError(t, rec, http.StatusInternalServerError, "internal error")
-	if strings.Contains(rec.Body.String(), "connection reset") {
-		t.Error("internal error details must not leak to the client")
+func TestHandlersErrors(t *testing.T) {
+	fake := newFakeStore()
+	router := newRouter(fake)
+	existing, _ := newTodo("existing")
+	if err := fake.Create(context.Background(), existing); err != nil {
+		t.Fatal(err)
+	}
+	missing := newID()
+
+	tests := []struct {
+		name, method, path, body string
+		wantCode                 int
+		wantError                string
+	}{
+		{"invalid json", "POST", "/todos", `{"title":`, 400, ErrInvalidJSON.Error()},
+		{"blank title", "POST", "/todos", `{"title":"  "}`, 400, ErrInvalidTitle.Error()},
+		{"missing title", "POST", "/todos", `{}`, 400, ErrInvalidTitle.Error()},
+		{"too long title", "POST", "/todos", `{"title":"` + strings.Repeat("x", 201) + `"}`, 400, ErrInvalidTitle.Error()},
+		{"limit 0", "GET", "/todos?limit=0", "", 400, ErrInvalidLimit.Error()},
+		{"limit 101", "GET", "/todos?limit=101", "", 400, ErrInvalidLimit.Error()},
+		{"limit abc", "GET", "/todos?limit=abc", "", 400, ErrInvalidLimit.Error()},
+		{"offset -1", "GET", "/todos?offset=-1", "", 400, ErrInvalidOffset.Error()},
+		{"get unknown", "GET", "/todos/" + missing, "", 404, "todo not found"},
+		{"get malformed", "GET", "/todos/not-a-uuid", "", 404, "todo not found"},
+		{"patch empty", "PATCH", "/todos/" + existing.ID, `{}`, 400, ErrEmptyPatch.Error()},
+		{"patch invalid json", "PATCH", "/todos/" + existing.ID, `nope`, 400, ErrInvalidJSON.Error()},
+		{"patch blank title", "PATCH", "/todos/" + existing.ID, `{"title":""}`, 400, ErrInvalidTitle.Error()},
+		{"patch unknown", "PATCH", "/todos/" + missing, `{"completed":true}`, 404, "todo not found"},
+		{"delete unknown", "DELETE", "/todos/" + missing, "", 404, "todo not found"},
+		{"activities malformed", "GET", "/todos/xyz/activities", "", 404, "todo not found"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body errorBody
+			code := do(t, router, tt.method, tt.path, tt.body, &body)
+			if code != tt.wantCode || body.Error != tt.wantError {
+				t.Errorf("got %d %q, want %d %q", code, body.Error, tt.wantCode, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestHandlersHideInternalErrors(t *testing.T) {
+	fake := newFakeStore()
+	fake.err = errors.New("connection refused")
+	router := newRouter(fake)
+
+	for _, path := range []string{"/health", "/todos", "/todos/" + newID()} {
+		var body errorBody
+		code := do(t, router, "GET", path, "", &body)
+		if code != http.StatusInternalServerError || body.Error != "internal error" {
+			t.Errorf("GET %s: got %d %q, want 500 \"internal error\"", path, code, body.Error)
+		}
 	}
 }

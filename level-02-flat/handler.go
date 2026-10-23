@@ -1,25 +1,16 @@
+// handler.go: Gin routes and handlers, and writeError, the one error-to-status mapping.
+
 package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-)
-
-// Request errors that belong to HTTP, not to the domain.
-var (
-	ErrInvalidJSON   = errors.New("invalid JSON body")
-	ErrInvalidLimit  = errors.New("limit must be an integer from 1 to 100")
-	ErrInvalidOffset = errors.New("offset must be an integer >= 0")
-)
-
-const (
-	defaultLimit = 20
-	maxLimit     = 100
 )
 
 type handler struct {
@@ -41,7 +32,7 @@ func newRouter(s store) *gin.Engine {
 
 func (h handler) health(c *gin.Context) {
 	if err := h.store.Ping(c.Request.Context()); err != nil {
-		writeError(c, err)
+		writeError(c, fmt.Errorf("ping: %w", err))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -55,12 +46,16 @@ func (h handler) createTodo(c *gin.Context) {
 		writeError(c, ErrInvalidJSON)
 		return
 	}
-	todo, err := h.store.Create(c.Request.Context(), req.Title)
+	t, err := newTodo(req.Title)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, todo)
+	if err := h.store.Create(c.Request.Context(), t); err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, t)
 }
 
 func (h handler) listTodos(c *gin.Context) {
@@ -78,40 +73,45 @@ func (h handler) listTodos(c *gin.Context) {
 }
 
 func (h handler) getTodo(c *gin.Context) {
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	todo, err := h.store.Get(c.Request.Context(), id)
+	t, err := h.store.Get(c.Request.Context(), id)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, todo)
+	c.JSON(http.StatusOK, t)
 }
 
 func (h handler) updateTodo(c *gin.Context) {
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	var p todoPatch
+	var p Patch
 	if err := c.ShouldBindJSON(&p); err != nil {
 		writeError(c, ErrInvalidJSON)
 		return
 	}
-	todo, err := h.store.Update(c.Request.Context(), id, p)
+	p, err = validatePatch(p)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, todo)
+	t, err := h.store.Update(c.Request.Context(), id, p)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, t)
 }
 
 func (h handler) deleteTodo(c *gin.Context) {
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		writeError(c, err)
 		return
@@ -124,12 +124,12 @@ func (h handler) deleteTodo(c *gin.Context) {
 }
 
 func (h handler) listActivities(c *gin.Context) {
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	activities, err := h.store.Activities(c.Request.Context(), id)
+	activities, err := h.store.ListActivities(c.Request.Context(), id)
 	if err != nil {
 		writeError(c, err)
 		return
@@ -137,9 +137,9 @@ func (h handler) listActivities(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": activities})
 }
 
-// parseID treats a malformed id like an unknown one. Checking here also keeps
-// Postgres from failing with a 500 when it casts the string to uuid.
-func parseID(c *gin.Context) (string, error) {
+// todoID reads the :id path parameter. A malformed id can't match any todo,
+// so it is reported as not found rather than as a bad request.
+func todoID(c *gin.Context) (string, error) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		return "", ErrNotFound
@@ -148,8 +148,8 @@ func parseID(c *gin.Context) (string, error) {
 }
 
 func parsePage(c *gin.Context) (limit, offset int, err error) {
-	limit, err = strconv.Atoi(c.DefaultQuery("limit", strconv.Itoa(defaultLimit)))
-	if err != nil || limit < 1 || limit > maxLimit {
+	limit, err = strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if err != nil || limit < 1 || limit > 100 {
 		return 0, 0, ErrInvalidLimit
 	}
 	offset, err = strconv.Atoi(c.DefaultQuery("offset", "0"))
@@ -159,14 +159,14 @@ func parsePage(c *gin.Context) (limit, offset int, err error) {
 	return limit, offset, nil
 }
 
-// writeError is the one place where errors become HTTP status codes.
+// writeError is the one place that turns an error into an HTTP status.
 func writeError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-	case errors.Is(err, ErrInvalidTitle),
+		c.JSON(http.StatusNotFound, gin.H{"error": ErrNotFound.Error()})
+	case errors.Is(err, ErrInvalidJSON),
+		errors.Is(err, ErrInvalidTitle),
 		errors.Is(err, ErrEmptyPatch),
-		errors.Is(err, ErrInvalidJSON),
 		errors.Is(err, ErrInvalidLimit),
 		errors.Is(err, ErrInvalidOffset):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
