@@ -2,13 +2,10 @@ package domain
 
 import "errors"
 
+// Sentinel errors are part of the core, so every adapter can check them with errors.Is
+// without knowing which database or framework produced them.
 var (
-	// ErrNotFound means no todo has the given id (malformed ids included).
-	ErrNotFound = errors.New("todo not found")
-
-	// ErrInvalidTitle means the trimmed title is empty or longer than 200 characters.
-	ErrInvalidTitle = errors.New("title must be 1-200 characters")
-
-	// ErrEmptyUpdate means an update asked to change nothing at all.
-	ErrEmptyUpdate = errors.New("provide title and/or completed")
+	ErrNotFound     = errors.New("todo not found")
+	ErrInvalidTitle = errors.New("title must be 1 to 200 characters")
+	ErrEmptyPatch   = errors.New("patch must set title or completed")
 )

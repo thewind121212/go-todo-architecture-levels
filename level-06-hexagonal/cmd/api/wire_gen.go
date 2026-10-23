@@ -13,13 +13,13 @@ import (
 	"example.com/todo/level06/internal/todo/adapters/postgres"
 	"example.com/todo/level06/internal/todo/service"
 	"example.com/todo/level06/internal/wire"
+	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
-	"net/http"
 )
 
 // Injectors from wire.go:
 
-func initPostgresServer(ctx context.Context, cfg config.Config, log zerolog.Logger) (*http.Server, func(), error) {
+func initPostgresApp(ctx context.Context, cfg config.Config, log zerolog.Logger) (*gin.Engine, func(), error) {
 	db, cleanup, err := wire.ProvidePostgres(ctx, cfg)
 	if err != nil {
 		return nil, nil, err
@@ -30,13 +30,12 @@ func initPostgresServer(ctx context.Context, cfg config.Config, log zerolog.Logg
 	todoService := service.NewTodoService(todoRepository, activityRepository, txManager)
 	checkFunc := wire.ProvidePostgresCheck(db)
 	engine := wire.ProvideRouter(todoService, checkFunc, log)
-	server := wire.ProvideServer(cfg, engine)
-	return server, func() {
+	return engine, func() {
 		cleanup()
 	}, nil
 }
 
-func initMongoServer(ctx context.Context, cfg config.Config, log zerolog.Logger) (*http.Server, func(), error) {
+func initMongoApp(ctx context.Context, cfg config.Config, log zerolog.Logger) (*gin.Engine, func(), error) {
 	database, cleanup, err := wire.ProvideMongo(ctx, cfg)
 	if err != nil {
 		return nil, nil, err
@@ -47,8 +46,7 @@ func initMongoServer(ctx context.Context, cfg config.Config, log zerolog.Logger)
 	todoService := service.NewTodoService(todoRepository, activityRepository, txManager)
 	checkFunc := wire.ProvideMongoCheck(database)
 	engine := wire.ProvideRouter(todoService, checkFunc, log)
-	server := wire.ProvideServer(cfg, engine)
-	return server, func() {
+	return engine, func() {
 		cleanup()
 	}, nil
 }

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -119,20 +120,34 @@ func runContract(t *testing.T, a adapters) {
 	t.Run("update persists title and completed", func(t *testing.T) {
 		todo := newTodo(t, "before")
 		require.NoError(t, a.todos.Create(ctx, todo))
-		_, err := todo.Rename("after")
+		_, err := todo.Rename("after", now())
 		require.NoError(t, err)
-		todo.SetCompleted(true)
+		todo.SetCompleted(true, now())
 		require.NoError(t, a.todos.Update(ctx, todo))
 
 		got, err := a.todos.Get(ctx, todo.ID)
 		require.NoError(t, err)
 		require.Equal(t, todo, got)
 
-		todo.SetCompleted(false)
+		todo.SetCompleted(false, now())
 		require.NoError(t, a.todos.Update(ctx, todo))
 		got, err = a.todos.Get(ctx, todo.ID)
 		require.NoError(t, err)
 		require.False(t, got.Completed)
+	})
+
+	t.Run("GetForUpdate reads inside a transaction", func(t *testing.T) {
+		todo := newTodo(t, "locked")
+		require.NoError(t, a.todos.Create(ctx, todo))
+		err := a.tx.WithinTx(ctx, func(ctx context.Context) error {
+			got, err := a.todos.GetForUpdate(ctx, todo.ID)
+			require.NoError(t, err)
+			require.Equal(t, todo, got)
+			_, err = a.todos.GetForUpdate(ctx, newTodo(t, "missing").ID)
+			require.ErrorIs(t, err, domain.ErrNotFound)
+			return nil
+		})
+		require.NoError(t, err)
 	})
 
 	t.Run("delete removes the todo", func(t *testing.T) {
@@ -150,7 +165,7 @@ func runContract(t *testing.T, a adapters) {
 		renamed := newActivity(t, todo.ID, domain.ActionRenamed)
 		other := newActivity(t, newTodo(t, "other").ID, domain.ActionCreated)
 		for _, act := range []*domain.Activity{created, renamed, other} {
-			require.NoError(t, a.activities.Append(ctx, act))
+			require.NoError(t, a.activities.Create(ctx, act))
 		}
 
 		got, err := a.activities.ListByTodo(ctx, todo.ID)
@@ -169,7 +184,7 @@ func runContract(t *testing.T, a adapters) {
 			if err := a.todos.Create(ctx, todo); err != nil {
 				return err
 			}
-			return a.activities.Append(ctx, newActivity(t, todo.ID, domain.ActionCreated))
+			return a.activities.Create(ctx, newActivity(t, todo.ID, domain.ActionCreated))
 		})
 		require.NoError(t, err)
 
@@ -185,7 +200,7 @@ func runContract(t *testing.T, a adapters) {
 		todo := newTodo(t, "rolled back")
 		err := a.tx.WithinTx(ctx, func(ctx context.Context) error {
 			require.NoError(t, a.todos.Create(ctx, todo))
-			require.NoError(t, a.activities.Append(ctx, newActivity(t, todo.ID, domain.ActionCreated)))
+			require.NoError(t, a.activities.Create(ctx, newActivity(t, todo.ID, domain.ActionCreated)))
 			// Inside the transaction the write is visible...
 			_, err := a.todos.Get(ctx, todo.ID)
 			require.NoError(t, err)
@@ -202,16 +217,19 @@ func runContract(t *testing.T, a adapters) {
 	})
 }
 
+// now is truncated to milliseconds like the service's nowUTC, so values round-trip exactly.
+func now() time.Time {
+	return time.Now().UTC().Truncate(time.Millisecond)
+}
+
 func newTodo(t *testing.T, title string) *domain.Todo {
 	t.Helper()
-	todo, err := domain.NewTodo(title)
+	todo, err := domain.NewTodo(title, now())
 	require.NoError(t, err)
 	return todo
 }
 
 func newActivity(t *testing.T, todoID string, action domain.Action) *domain.Activity {
 	t.Helper()
-	activity, err := domain.NewActivity(todoID, action)
-	require.NoError(t, err)
-	return activity
+	return domain.NewActivity(todoID, action, now())
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
@@ -55,24 +56,29 @@ func action(want domain.Action) any {
 
 func existingTodo(t *testing.T, completed bool) *domain.Todo {
 	t.Helper()
-	todo, err := domain.NewTodo("old")
+	todo, err := domain.NewTodo("old", time.Now().UTC().Add(-time.Hour))
 	require.NoError(t, err)
 	todo.Completed = completed
 	return todo
 }
 
-func ptr[T any](v T) *T { return &v }
-
 func TestCreate(t *testing.T) {
 	svc, d := newService(t)
+	var activity *domain.Activity
 	expectTx(d.tx)
 	d.todos.EXPECT().Create(inTx(), mock.Anything).Return(nil).Once()
-	d.activities.EXPECT().Append(inTx(), action(domain.ActionCreated)).Return(nil).Once()
+	d.activities.EXPECT().Create(inTx(), action(domain.ActionCreated)).
+		RunAndReturn(func(_ context.Context, a *domain.Activity) error {
+			activity = a
+			return nil
+		}).Once()
 
 	todo, err := svc.Create(context.Background(), "  buy milk ")
 
 	require.NoError(t, err)
 	require.Equal(t, "buy milk", todo.Title)
+	require.Equal(t, todo.ID, activity.TodoID)
+	require.Equal(t, todo.CreatedAt, activity.CreatedAt, "one now per operation")
 }
 
 func TestCreateInvalidTitleTouchesNothing(t *testing.T) {
@@ -87,7 +93,7 @@ func TestCreateActivityFailureIsReturned(t *testing.T) {
 	svc, d := newService(t)
 	expectTx(d.tx)
 	d.todos.EXPECT().Create(inTx(), mock.Anything).Return(nil).Once()
-	d.activities.EXPECT().Append(inTx(), mock.Anything).Return(errBoom).Once()
+	d.activities.EXPECT().Create(inTx(), mock.Anything).Return(errBoom).Once()
 
 	_, err := svc.Create(context.Background(), "buy milk")
 
@@ -98,33 +104,38 @@ func TestCreateActivityFailureIsReturned(t *testing.T) {
 func TestUpdateTitleAndCompletedRecordsBothInOrder(t *testing.T) {
 	svc, d := newService(t)
 	todo := existingTodo(t, false)
-	var recorded []domain.Action
+	var recorded []*domain.Activity
 	expectTx(d.tx)
-	d.todos.EXPECT().Get(inTx(), todo.ID).Return(todo, nil).Once()
+	d.todos.EXPECT().GetForUpdate(inTx(), todo.ID).Return(todo, nil).Once()
 	d.todos.EXPECT().Update(inTx(), todo).Return(nil).Once()
-	d.activities.EXPECT().Append(inTx(), mock.Anything).
+	d.activities.EXPECT().Create(inTx(), mock.Anything).
 		RunAndReturn(func(_ context.Context, a *domain.Activity) error {
-			recorded = append(recorded, a.Action)
+			recorded = append(recorded, a)
 			return nil
 		}).Twice()
 
-	got, err := svc.Update(context.Background(), todo.ID, ports.UpdateTodoInput{Title: ptr("new"), Completed: ptr(true)})
+	got, err := svc.Update(context.Background(), ports.UpdateTodoInput{ID: todo.ID, Title: new("new"), Completed: new(true)})
 
 	require.NoError(t, err)
 	require.Equal(t, "new", got.Title)
 	require.True(t, got.Completed)
-	require.Equal(t, []domain.Action{domain.ActionRenamed, domain.ActionCompleted}, recorded)
+	require.Len(t, recorded, 2)
+	require.Equal(t, domain.ActionRenamed, recorded[0].Action)
+	require.Equal(t, domain.ActionCompleted, recorded[1].Action)
+	for _, a := range recorded {
+		require.Equal(t, got.UpdatedAt, a.CreatedAt, "one now per operation")
+	}
 }
 
 func TestUpdateReopen(t *testing.T) {
 	svc, d := newService(t)
 	todo := existingTodo(t, true)
 	expectTx(d.tx)
-	d.todos.EXPECT().Get(inTx(), todo.ID).Return(todo, nil).Once()
+	d.todos.EXPECT().GetForUpdate(inTx(), todo.ID).Return(todo, nil).Once()
 	d.todos.EXPECT().Update(inTx(), todo).Return(nil).Once()
-	d.activities.EXPECT().Append(inTx(), action(domain.ActionReopened)).Return(nil).Once()
+	d.activities.EXPECT().Create(inTx(), action(domain.ActionReopened)).Return(nil).Once()
 
-	got, err := svc.Update(context.Background(), todo.ID, ports.UpdateTodoInput{Completed: ptr(false)})
+	got, err := svc.Update(context.Background(), ports.UpdateTodoInput{ID: todo.ID, Completed: new(false)})
 
 	require.NoError(t, err)
 	require.False(t, got.Completed)
@@ -134,9 +145,9 @@ func TestUpdateWithoutChangeWritesNothing(t *testing.T) {
 	svc, d := newService(t)
 	todo := existingTodo(t, false)
 	expectTx(d.tx)
-	d.todos.EXPECT().Get(inTx(), todo.ID).Return(todo, nil).Once()
+	d.todos.EXPECT().GetForUpdate(inTx(), todo.ID).Return(todo, nil).Once()
 
-	_, err := svc.Update(context.Background(), todo.ID, ports.UpdateTodoInput{Title: ptr("old"), Completed: ptr(false)})
+	_, err := svc.Update(context.Background(), ports.UpdateTodoInput{ID: todo.ID, Title: new("old"), Completed: new(false)})
 
 	require.NoError(t, err)
 }
@@ -145,32 +156,35 @@ func TestUpdateActivityFailureIsReturned(t *testing.T) {
 	svc, d := newService(t)
 	todo := existingTodo(t, false)
 	expectTx(d.tx)
-	d.todos.EXPECT().Get(inTx(), todo.ID).Return(todo, nil).Once()
+	d.todos.EXPECT().GetForUpdate(inTx(), todo.ID).Return(todo, nil).Once()
 	d.todos.EXPECT().Update(inTx(), todo).Return(nil).Once()
-	d.activities.EXPECT().Append(inTx(), mock.Anything).Return(errBoom).Once()
+	d.activities.EXPECT().Create(inTx(), mock.Anything).Return(errBoom).Once()
 
-	_, err := svc.Update(context.Background(), todo.ID, ports.UpdateTodoInput{Completed: ptr(true)})
+	_, err := svc.Update(context.Background(), ports.UpdateTodoInput{ID: todo.ID, Completed: new(true)})
 
 	require.ErrorIs(t, err, errBoom)
 }
 
+// Bad input is rejected before WithinTx: no expectations are set, so any
+// repository or TxManager call would fail the test.
 func TestUpdateRejectsBadInputBeforeTx(t *testing.T) {
 	svc, _ := newService(t)
+	id := uuid.NewString()
 
-	_, err := svc.Update(context.Background(), uuid.NewString(), ports.UpdateTodoInput{})
-	require.ErrorIs(t, err, domain.ErrEmptyUpdate)
+	_, err := svc.Update(context.Background(), ports.UpdateTodoInput{ID: id})
+	require.ErrorIs(t, err, domain.ErrEmptyPatch)
 
-	_, err = svc.Update(context.Background(), "not-a-uuid", ports.UpdateTodoInput{Completed: ptr(true)})
-	require.ErrorIs(t, err, domain.ErrNotFound)
+	_, err = svc.Update(context.Background(), ports.UpdateTodoInput{ID: id, Title: new(" ")})
+	require.ErrorIs(t, err, domain.ErrInvalidTitle)
 }
 
 func TestUpdateUnknownID(t *testing.T) {
 	svc, d := newService(t)
 	id := uuid.NewString()
 	expectTx(d.tx)
-	d.todos.EXPECT().Get(inTx(), id).Return(nil, domain.ErrNotFound).Once()
+	d.todos.EXPECT().GetForUpdate(inTx(), id).Return(nil, domain.ErrNotFound).Once()
 
-	_, err := svc.Update(context.Background(), id, ports.UpdateTodoInput{Completed: ptr(true)})
+	_, err := svc.Update(context.Background(), ports.UpdateTodoInput{ID: id, Completed: new(true)})
 
 	require.ErrorIs(t, err, domain.ErrNotFound)
 }
@@ -180,7 +194,7 @@ func TestDelete(t *testing.T) {
 	id := uuid.NewString()
 	expectTx(d.tx)
 	d.todos.EXPECT().Delete(inTx(), id).Return(nil).Once()
-	d.activities.EXPECT().Append(inTx(), action(domain.ActionDeleted)).Return(nil).Once()
+	d.activities.EXPECT().Create(inTx(), action(domain.ActionDeleted)).Return(nil).Once()
 
 	require.NoError(t, svc.Delete(context.Background(), id))
 }
@@ -192,18 +206,4 @@ func TestDeleteUnknownIDRecordsNothing(t *testing.T) {
 	d.todos.EXPECT().Delete(inTx(), id).Return(domain.ErrNotFound).Once()
 
 	require.ErrorIs(t, svc.Delete(context.Background(), id), domain.ErrNotFound)
-}
-
-func TestMalformedIDNeverReachesRepositories(t *testing.T) {
-	svc, _ := newService(t)
-	ctx := context.Background()
-
-	_, err := svc.Get(ctx, "not-a-uuid")
-	require.ErrorIs(t, err, domain.ErrNotFound)
-
-	require.ErrorIs(t, svc.Delete(ctx, "not-a-uuid"), domain.ErrNotFound)
-
-	activities, err := svc.ListActivities(ctx, "not-a-uuid")
-	require.NoError(t, err)
-	require.Empty(t, activities)
 }

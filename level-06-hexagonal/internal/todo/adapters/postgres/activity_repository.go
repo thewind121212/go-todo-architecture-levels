@@ -21,7 +21,7 @@ func NewActivityRepository(db *gorm.DB) *ActivityRepository {
 	return &ActivityRepository{db: db}
 }
 
-func (r *ActivityRepository) Append(ctx context.Context, activity *domain.Activity) error {
+func (r *ActivityRepository) Create(ctx context.Context, activity *domain.Activity) error {
 	if err := conn(ctx, r.db).Create(toActivityModel(activity)).Error; err != nil {
 		return fmt.Errorf("insert activity: %w", err)
 	}

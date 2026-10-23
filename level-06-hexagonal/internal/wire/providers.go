@@ -5,7 +5,6 @@ package wire
 
 import (
 	"context"
-	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -25,12 +24,11 @@ import (
 )
 
 // appSet is everything that does not depend on the database choice:
-// the application core, the driving HTTP adapter and the server.
+// the application core and the driving HTTP adapter.
 var appSet = wire.NewSet(
 	service.NewTodoService,
 	wire.Bind(new(ports.TodoService), new(*service.TodoService)),
 	ProvideRouter,
-	ProvideServer,
 )
 
 // PostgresSet plugs the Postgres adapters into the driven ports.
@@ -81,13 +79,24 @@ func ProvideMongoCheck(db *mongo.Database) health.CheckFunc {
 
 // ProvideRouter mounts every route. The HTTP adapter only sees ports.TodoService.
 func ProvideRouter(svc ports.TodoService, check health.CheckFunc, log zerolog.Logger) *gin.Engine {
+	// gin.New instead of gin.Default: requestLogger replaces Gin's text
+	// logger, so each request is logged once, as zerolog JSON.
 	router := gin.New()
-	router.Use(gin.Recovery())
+	router.Use(gin.Recovery(), requestLogger(log))
 	health.RegisterRoutes(router, check, log)
 	todohttp.RegisterRoutes(router, svc, log)
 	return router
 }
 
-func ProvideServer(cfg config.Config, router *gin.Engine) *http.Server {
-	return &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
+func requestLogger(log zerolog.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		log.Info().
+			Str("method", c.Request.Method).
+			Str("path", c.Request.URL.Path).
+			Int("status", c.Writer.Status()).
+			Dur("latency", time.Since(start)).
+			Msg("request")
+	}
 }

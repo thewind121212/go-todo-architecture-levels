@@ -11,74 +11,72 @@ import (
 	"example.com/todo/level06/internal/todo/domain"
 )
 
+var now = time.Date(2026, 1, 2, 3, 4, 5, 6_000_000, time.UTC)
+
 func TestNewTodo(t *testing.T) {
-	todo, err := domain.NewTodo("  buy milk  ")
+	todo, err := domain.NewTodo("  buy milk  ", now)
 	require.NoError(t, err)
 
 	require.Equal(t, "buy milk", todo.Title)
 	require.False(t, todo.Completed)
-	require.Equal(t, todo.CreatedAt, todo.UpdatedAt)
-	require.Equal(t, time.UTC, todo.CreatedAt.Location())
-	require.Equal(t, todo.CreatedAt, todo.CreatedAt.Truncate(time.Millisecond))
+	require.Equal(t, now, todo.CreatedAt)
+	require.Equal(t, now, todo.UpdatedAt)
 	require.Equal(t, uuid.Version(7), uuid.MustParse(todo.ID).Version())
 }
 
-func TestNewTodoTitleRules(t *testing.T) {
+func TestTitleRules(t *testing.T) {
 	tests := []struct {
 		name    string
 		title   string
-		wantErr bool
+		wantErr error
 	}{
-		{"empty", "", true},
-		{"only spaces", "   ", true},
-		{"200 multi-byte runes", strings.Repeat("é", 200), false},
-		{"201 runes", strings.Repeat("x", 201), true},
+		{"empty", "", domain.ErrInvalidTitle},
+		{"only spaces", "   ", domain.ErrInvalidTitle},
+		{"200 multi-byte runes", strings.Repeat("é", 200), nil},
+		{"201 runes", strings.Repeat("x", 201), domain.ErrInvalidTitle},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := domain.NewTodo(tt.title)
-			if tt.wantErr {
-				require.ErrorIs(t, err, domain.ErrInvalidTitle)
-				return
-			}
-			require.NoError(t, err)
+			_, err := domain.NewTodo(tt.title, now)
+			require.ErrorIs(t, err, tt.wantErr)
+			_, err = domain.ValidateTitle(tt.title)
+			require.ErrorIs(t, err, tt.wantErr)
 		})
 	}
 }
 
-func TestRename(t *testing.T) {
-	todo, err := domain.NewTodo("a")
+func TestTodoRename(t *testing.T) {
+	todo, err := domain.NewTodo("old", now)
 	require.NoError(t, err)
+	later := now.Add(time.Second)
 
-	changed, err := todo.Rename(" a ")
+	changed, err := todo.Rename(" old ", later)
 	require.NoError(t, err)
 	require.False(t, changed, "same title after trimming is not a change")
+	require.Equal(t, now, todo.UpdatedAt)
 
-	changed, err = todo.Rename("b")
+	changed, err = todo.Rename("new", later)
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.Equal(t, "b", todo.Title)
+	require.Equal(t, "new", todo.Title)
+	require.Equal(t, later, todo.UpdatedAt)
 
-	_, err = todo.Rename(" ")
+	_, err = todo.Rename(" ", later)
 	require.ErrorIs(t, err, domain.ErrInvalidTitle)
-	require.Equal(t, "b", todo.Title)
 }
 
-func TestSetCompleted(t *testing.T) {
-	todo, err := domain.NewTodo("a")
+func TestTodoSetCompleted(t *testing.T) {
+	todo, err := domain.NewTodo("task", now)
 	require.NoError(t, err)
 
-	require.False(t, todo.SetCompleted(false))
-	require.True(t, todo.SetCompleted(true))
-	require.True(t, todo.Completed)
-	require.Equal(t, domain.ActionCompleted, domain.CompletionAction(true))
-	require.Equal(t, domain.ActionReopened, domain.CompletionAction(false))
-}
+	_, changed := todo.SetCompleted(false, now)
+	require.False(t, changed, "false -> false is not a change")
 
-func TestIsValidID(t *testing.T) {
-	id := uuid.Must(uuid.NewV7()).String()
-	require.True(t, domain.IsValidID(id))
-	require.False(t, domain.IsValidID("not-a-uuid"))
-	require.False(t, domain.IsValidID(strings.ToUpper(id)))
-	require.False(t, domain.IsValidID("{"+id+"}"))
+	action, changed := todo.SetCompleted(true, now)
+	require.True(t, changed)
+	require.Equal(t, domain.ActionCompleted, action)
+
+	action, changed = todo.SetCompleted(false, now)
+	require.True(t, changed)
+	require.Equal(t, domain.ActionReopened, action)
 }

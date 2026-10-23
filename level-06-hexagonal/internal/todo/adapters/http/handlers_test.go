@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -39,7 +40,7 @@ func do(router *gin.Engine, method, path, body string) *httptest.ResponseRecorde
 
 func sampleTodo(t *testing.T) *domain.Todo {
 	t.Helper()
-	todo, err := domain.NewTodo("buy milk")
+	todo, err := domain.NewTodo("buy milk", time.Now().UTC())
 	require.NoError(t, err)
 	return todo
 }
@@ -63,7 +64,7 @@ func TestCreateErrors(t *testing.T) {
 
 	rec := do(router, http.MethodPost, "/todos", `{"title":" "}`)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.JSONEq(t, `{"error":"title must be 1-200 characters"}`, rec.Body.String())
+	require.JSONEq(t, `{"error":"title must be 1 to 200 characters"}`, rec.Body.String())
 
 	rec = do(router, http.MethodPost, "/todos", `{"title":`)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
@@ -92,30 +93,64 @@ func TestListPassesPage(t *testing.T) {
 
 func TestListRejectsBadPage(t *testing.T) {
 	router, _ := newRouter(t)
-	for _, query := range []string{"limit=0", "limit=101", "limit=abc", "offset=-1", "offset=x"} {
+	tests := map[string]string{
+		"limit=0":   "limit must be between 1 and 100",
+		"limit=101": "limit must be between 1 and 100",
+		"limit=abc": "limit must be between 1 and 100",
+		"offset=-1": "offset must be 0 or more",
+		"offset=x":  "offset must be 0 or more",
+	}
+	for query, msg := range tests {
 		rec := do(router, http.MethodGet, "/todos?"+query, "")
 		require.Equal(t, http.StatusBadRequest, rec.Code, query)
-		require.Contains(t, rec.Body.String(), `"error":`, query)
+		require.JSONEq(t, `{"error":"`+msg+`"}`, rec.Body.String(), query)
 	}
 }
 
 func TestGetNotFound(t *testing.T) {
 	router, svc := newRouter(t)
-	svc.EXPECT().Get(mock.Anything, "not-a-uuid").Return(nil, domain.ErrNotFound).Once()
+	id := uuid.NewString()
+	svc.EXPECT().Get(mock.Anything, id).Return(nil, domain.ErrNotFound).Once()
 
-	rec := do(router, http.MethodGet, "/todos/not-a-uuid", "")
+	rec := do(router, http.MethodGet, "/todos/"+id, "")
 
 	require.Equal(t, http.StatusNotFound, rec.Code)
 	require.JSONEq(t, `{"error":"todo not found"}`, rec.Body.String())
+}
+
+// The adapter parses :id itself, so a malformed id is 404 on every route and
+// never reaches the service (the mock has no expectations).
+func TestMalformedIDIsNotFound(t *testing.T) {
+	router, _ := newRouter(t)
+	for _, tc := range []struct{ method, path, body string }{
+		{http.MethodGet, "/todos/not-a-uuid", ""},
+		{http.MethodPatch, "/todos/not-a-uuid", `{"completed":true}`},
+		{http.MethodDelete, "/todos/not-a-uuid", ""},
+		{http.MethodGet, "/todos/not-a-uuid/activities", ""},
+	} {
+		rec := do(router, tc.method, tc.path, tc.body)
+		require.Equal(t, http.StatusNotFound, rec.Code, tc.method+" "+tc.path)
+		require.JSONEq(t, `{"error":"todo not found"}`, rec.Body.String(), tc.method+" "+tc.path)
+	}
+}
+
+func TestIDIsPassedCanonical(t *testing.T) {
+	router, svc := newRouter(t)
+	id := uuid.New()
+	svc.EXPECT().Get(mock.Anything, id.String()).Return(sampleTodo(t), nil).Once()
+
+	rec := do(router, http.MethodGet, "/todos/"+strings.ToUpper(id.String()), "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestUpdatePassesOnlyGivenFields(t *testing.T) {
 	router, svc := newRouter(t)
 	todo := sampleTodo(t)
 	onlyCompleted := mock.MatchedBy(func(in ports.UpdateTodoInput) bool {
-		return in.Title == nil && in.Completed != nil && *in.Completed
+		return in.ID == todo.ID && in.Title == nil && in.Completed != nil && *in.Completed
 	})
-	svc.EXPECT().Update(mock.Anything, todo.ID, onlyCompleted).Return(todo, nil).Once()
+	svc.EXPECT().Update(mock.Anything, onlyCompleted).Return(todo, nil).Once()
 
 	rec := do(router, http.MethodPatch, "/todos/"+todo.ID, `{"completed":true}`)
 
@@ -125,12 +160,12 @@ func TestUpdatePassesOnlyGivenFields(t *testing.T) {
 func TestUpdateEmptyBody(t *testing.T) {
 	router, svc := newRouter(t)
 	id := uuid.NewString()
-	svc.EXPECT().Update(mock.Anything, id, ports.UpdateTodoInput{}).Return(nil, domain.ErrEmptyUpdate).Once()
+	svc.EXPECT().Update(mock.Anything, ports.UpdateTodoInput{ID: id}).Return(nil, domain.ErrEmptyPatch).Once()
 
 	rec := do(router, http.MethodPatch, "/todos/"+id, `{}`)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.Contains(t, rec.Body.String(), `"error":`)
+	require.JSONEq(t, `{"error":"patch must set title or completed"}`, rec.Body.String())
 }
 
 func TestDelete(t *testing.T) {

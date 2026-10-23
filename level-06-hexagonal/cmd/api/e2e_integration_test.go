@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -35,13 +36,13 @@ func TestEndToEnd(t *testing.T) {
 	dsn, err := ctr.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
 
-	srv, cleanup, err := initPostgresServer(ctx, config.Config{PostgresDSN: dsn}, zerolog.Nop())
+	router, cleanup, err := initPostgresApp(ctx, config.Config{PostgresDSN: dsn}, zerolog.Nop())
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
 
 	call := func(method, path, body string) (int, map[string]any) {
 		rec := httptest.NewRecorder()
-		srv.Handler.ServeHTTP(rec, httptest.NewRequest(method, path, strings.NewReader(body)))
+		router.ServeHTTP(rec, httptest.NewRequest(method, path, strings.NewReader(body)))
 		var out map[string]any
 		if rec.Body.Len() > 0 {
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
@@ -64,4 +65,8 @@ func TestEndToEnd(t *testing.T) {
 		actions = append(actions, item.(map[string]any)["action"].(string))
 	}
 	require.Equal(t, []string{"created", "renamed", "completed"}, actions)
+
+	// Input is validated before the database: a bad patch on an unknown id is 400, not 404.
+	status, _ = call(http.MethodPatch, "/todos/"+uuid.NewString(), `{}`)
+	require.Equal(t, http.StatusBadRequest, status)
 }

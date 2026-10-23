@@ -384,8 +384,8 @@ func (_c *MockTodoService_ListActivities_Call) RunAndReturn(run func(ctx context
 }
 
 // Update provides a mock function for the type MockTodoService
-func (_mock *MockTodoService) Update(ctx context.Context, id string, in ports.UpdateTodoInput) (*domain.Todo, error) {
-	ret := _mock.Called(ctx, id, in)
+func (_mock *MockTodoService) Update(ctx context.Context, in ports.UpdateTodoInput) (*domain.Todo, error) {
+	ret := _mock.Called(ctx, in)
 
 	if len(ret) == 0 {
 		panic("no return value specified for Update")
@@ -393,18 +393,18 @@ func (_mock *MockTodoService) Update(ctx context.Context, id string, in ports.Up
 
 	var r0 *domain.Todo
 	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, string, ports.UpdateTodoInput) (*domain.Todo, error)); ok {
-		return returnFunc(ctx, id, in)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, ports.UpdateTodoInput) (*domain.Todo, error)); ok {
+		return returnFunc(ctx, in)
 	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, string, ports.UpdateTodoInput) *domain.Todo); ok {
-		r0 = returnFunc(ctx, id, in)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, ports.UpdateTodoInput) *domain.Todo); ok {
+		r0 = returnFunc(ctx, in)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(*domain.Todo)
 		}
 	}
-	if returnFunc, ok := ret.Get(1).(func(context.Context, string, ports.UpdateTodoInput) error); ok {
-		r1 = returnFunc(ctx, id, in)
+	if returnFunc, ok := ret.Get(1).(func(context.Context, ports.UpdateTodoInput) error); ok {
+		r1 = returnFunc(ctx, in)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -418,30 +418,24 @@ type MockTodoService_Update_Call struct {
 
 // Update is a helper method to define mock.On call
 //   - ctx context.Context
-//   - id string
 //   - in ports.UpdateTodoInput
-func (_e *MockTodoService_Expecter) Update(ctx any, id any, in any) *MockTodoService_Update_Call {
-	return &MockTodoService_Update_Call{Call: _e.mock.On("Update", ctx, id, in)}
+func (_e *MockTodoService_Expecter) Update(ctx any, in any) *MockTodoService_Update_Call {
+	return &MockTodoService_Update_Call{Call: _e.mock.On("Update", ctx, in)}
 }
 
-func (_c *MockTodoService_Update_Call) Run(run func(ctx context.Context, id string, in ports.UpdateTodoInput)) *MockTodoService_Update_Call {
+func (_c *MockTodoService_Update_Call) Run(run func(ctx context.Context, in ports.UpdateTodoInput)) *MockTodoService_Update_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
 			arg0 = args[0].(context.Context)
 		}
-		var arg1 string
+		var arg1 ports.UpdateTodoInput
 		if args[1] != nil {
-			arg1 = args[1].(string)
-		}
-		var arg2 ports.UpdateTodoInput
-		if args[2] != nil {
-			arg2 = args[2].(ports.UpdateTodoInput)
+			arg1 = args[1].(ports.UpdateTodoInput)
 		}
 		run(
 			arg0,
 			arg1,
-			arg2,
 		)
 	})
 	return _c
@@ -452,7 +446,7 @@ func (_c *MockTodoService_Update_Call) Return(todo *domain.Todo, err error) *Moc
 	return _c
 }
 
-func (_c *MockTodoService_Update_Call) RunAndReturn(run func(ctx context.Context, id string, in ports.UpdateTodoInput) (*domain.Todo, error)) *MockTodoService_Update_Call {
+func (_c *MockTodoService_Update_Call) RunAndReturn(run func(ctx context.Context, in ports.UpdateTodoInput) (*domain.Todo, error)) *MockTodoService_Update_Call {
 	_c.Call.Return(run)
 	return _c
 }

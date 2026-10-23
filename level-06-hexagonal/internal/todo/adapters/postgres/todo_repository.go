@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"example.com/todo/level06/internal/todo/domain"
 	"example.com/todo/level06/internal/todo/ports"
@@ -30,8 +31,18 @@ func (r *TodoRepository) Create(ctx context.Context, todo *domain.Todo) error {
 }
 
 func (r *TodoRepository) Get(ctx context.Context, id string) (*domain.Todo, error) {
+	return r.get(conn(ctx, r.db), id)
+}
+
+// GetForUpdate adds SELECT ... FOR UPDATE: two concurrent PATCHes on one todo queue up
+// instead of both reading the old row and both logging "completed".
+func (r *TodoRepository) GetForUpdate(ctx context.Context, id string) (*domain.Todo, error) {
+	return r.get(conn(ctx, r.db).Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}), id)
+}
+
+func (r *TodoRepository) get(db *gorm.DB, id string) (*domain.Todo, error) {
 	var m todoModel
-	err := conn(ctx, r.db).Where("id = ?", id).Take(&m).Error
+	err := db.Where("id = ?", id).Take(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, domain.ErrNotFound
 	}

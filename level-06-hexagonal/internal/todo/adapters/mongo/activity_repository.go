@@ -23,7 +23,7 @@ func NewActivityRepository(db *mongo.Database) *ActivityRepository {
 	return &ActivityRepository{coll: db.Collection(activitiesCollection)}
 }
 
-func (r *ActivityRepository) Append(ctx context.Context, activity *domain.Activity) error {
+func (r *ActivityRepository) Create(ctx context.Context, activity *domain.Activity) error {
 	if _, err := r.coll.InsertOne(ctx, toActivityDoc(activity)); err != nil {
 		return fmt.Errorf("insert activity: %w", err)
 	}

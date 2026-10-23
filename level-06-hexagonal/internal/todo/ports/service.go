@@ -15,17 +15,19 @@ import (
 )
 
 // TodoService is the driving port: everything the outside world may ask of the todo feature.
+// Callers pass ids in canonical UUID form; the driving adapter is the one that parses them.
 type TodoService interface {
 	Create(ctx context.Context, title string) (*domain.Todo, error)
 	Get(ctx context.Context, id string) (*domain.Todo, error)
 	List(ctx context.Context, limit, offset int) ([]*domain.Todo, error)
-	Update(ctx context.Context, id string, in UpdateTodoInput) (*domain.Todo, error)
+	Update(ctx context.Context, in UpdateTodoInput) (*domain.Todo, error)
 	Delete(ctx context.Context, id string) error
 	ListActivities(ctx context.Context, todoID string) ([]*domain.Activity, error)
 }
 
-// UpdateTodoInput is a partial update: nil fields are left unchanged.
+// UpdateTodoInput uses pointers because a nil field means "leave it unchanged".
 type UpdateTodoInput struct {
+	ID        string
 	Title     *string
 	Completed *bool
 }

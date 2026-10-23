@@ -7,6 +7,7 @@ package service
 
 import (
 	"context"
+	"time"
 
 	"example.com/todo/level06/internal/todo/domain"
 	"example.com/todo/level06/internal/todo/ports"
@@ -28,7 +29,8 @@ func NewTodoService(todos ports.TodoRepository, activities ports.ActivityReposit
 
 // Create stores a new todo and its "created" activity in one transaction.
 func (s *TodoService) Create(ctx context.Context, title string) (*domain.Todo, error) {
-	todo, err := domain.NewTodo(title)
+	now := nowUTC()
+	todo, err := domain.NewTodo(title, now)
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +38,7 @@ func (s *TodoService) Create(ctx context.Context, title string) (*domain.Todo, e
 		if err := s.todos.Create(ctx, todo); err != nil {
 			return err
 		}
-		return s.record(ctx, todo.ID, domain.ActionCreated)
+		return s.activities.Create(ctx, domain.NewActivity(todo.ID, domain.ActionCreated, now))
 	})
 	if err != nil {
 		return nil, err
@@ -46,9 +48,6 @@ func (s *TodoService) Create(ctx context.Context, title string) (*domain.Todo, e
 
 // Get returns one todo.
 func (s *TodoService) Get(ctx context.Context, id string) (*domain.Todo, error) {
-	if !domain.IsValidID(id) {
-		return nil, domain.ErrNotFound
-	}
 	return s.todos.Get(ctx, id)
 }
 
@@ -57,34 +56,41 @@ func (s *TodoService) List(ctx context.Context, limit, offset int) ([]*domain.To
 	return s.todos.List(ctx, limit, offset)
 }
 
-// Update applies a partial update and records one activity per real change.
-func (s *TodoService) Update(ctx context.Context, id string, in ports.UpdateTodoInput) (*domain.Todo, error) {
+// Update renames and/or completes a todo, recording one activity per real change.
+func (s *TodoService) Update(ctx context.Context, in ports.UpdateTodoInput) (*domain.Todo, error) {
+	// Input is checked before the transaction, so a bad patch never touches the database.
 	if in.Title == nil && in.Completed == nil {
-		return nil, domain.ErrEmptyUpdate
+		return nil, domain.ErrEmptyPatch
 	}
-	if !domain.IsValidID(id) {
-		return nil, domain.ErrNotFound
+	if in.Title != nil {
+		if _, err := domain.ValidateTitle(*in.Title); err != nil {
+			return nil, err
+		}
 	}
+
+	now := nowUTC()
 	var todo *domain.Todo
-	// The read happens inside the transaction, so the change is based on what is committed.
+	// The read is inside the transaction and locks the row, because the changes are computed from it.
 	err := s.tx.WithinTx(ctx, func(ctx context.Context) error {
 		var err error
-		todo, err = s.todos.Get(ctx, id)
+		todo, err = s.todos.GetForUpdate(ctx, in.ID)
 		if err != nil {
 			return err
 		}
-		actions, err := applyUpdate(todo, in)
+
+		actions, err := applyChanges(todo, in, now)
 		if err != nil {
 			return err
 		}
 		if len(actions) == 0 {
 			return nil // nothing changed: no write, no activity
 		}
+
 		if err := s.todos.Update(ctx, todo); err != nil {
 			return err
 		}
 		for _, action := range actions {
-			if err := s.record(ctx, todo.ID, action); err != nil {
+			if err := s.activities.Create(ctx, domain.NewActivity(todo.ID, action, now)); err != nil {
 				return err
 			}
 		}
@@ -96,32 +102,27 @@ func (s *TodoService) Update(ctx context.Context, id string, in ports.UpdateTodo
 	return todo, nil
 }
 
-// Delete removes a todo and records a "deleted" activity in one transaction.
+// Delete hard-deletes a todo and records its "deleted" activity. The activities are kept.
 func (s *TodoService) Delete(ctx context.Context, id string) error {
-	if !domain.IsValidID(id) {
-		return domain.ErrNotFound
-	}
+	now := nowUTC()
 	return s.tx.WithinTx(ctx, func(ctx context.Context) error {
 		if err := s.todos.Delete(ctx, id); err != nil {
 			return err
 		}
-		return s.record(ctx, id, domain.ActionDeleted)
+		return s.activities.Create(ctx, domain.NewActivity(id, domain.ActionDeleted, now))
 	})
 }
 
 // ListActivities returns a todo's audit log, oldest first. It does not check that the todo exists.
 func (s *TodoService) ListActivities(ctx context.Context, todoID string) ([]*domain.Activity, error) {
-	if !domain.IsValidID(todoID) {
-		return []*domain.Activity{}, nil
-	}
 	return s.activities.ListByTodo(ctx, todoID)
 }
 
-// applyUpdate changes todo in memory and returns the actions to record, in order.
-func applyUpdate(todo *domain.Todo, in ports.UpdateTodoInput) ([]domain.Action, error) {
+// applyChanges applies the requested fields and returns one action per real change, in order.
+func applyChanges(todo *domain.Todo, in ports.UpdateTodoInput, now time.Time) ([]domain.Action, error) {
 	var actions []domain.Action
 	if in.Title != nil {
-		renamed, err := todo.Rename(*in.Title)
+		renamed, err := todo.Rename(*in.Title, now)
 		if err != nil {
 			return nil, err
 		}
@@ -129,16 +130,17 @@ func applyUpdate(todo *domain.Todo, in ports.UpdateTodoInput) ([]domain.Action, 
 			actions = append(actions, domain.ActionRenamed)
 		}
 	}
-	if in.Completed != nil && todo.SetCompleted(*in.Completed) {
-		actions = append(actions, domain.CompletionAction(todo.Completed))
+	if in.Completed != nil {
+		if action, changed := todo.SetCompleted(*in.Completed, now); changed {
+			actions = append(actions, action)
+		}
 	}
 	return actions, nil
 }
 
-func (s *TodoService) record(ctx context.Context, todoID string, action domain.Action) error {
-	activity, err := domain.NewActivity(todoID, action)
-	if err != nil {
-		return err
-	}
-	return s.activities.Append(ctx, activity)
+// nowUTC is the one timestamp of an operation, so a change and its activities share it.
+// It is truncated to milliseconds because Mongo stores milliseconds; this way both
+// adapters round-trip exactly the same value.
+func nowUTC() time.Time {
+	return time.Now().UTC().Truncate(time.Millisecond)
 }

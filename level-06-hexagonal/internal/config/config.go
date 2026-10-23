@@ -1,15 +1,16 @@
-// Package config reads the app settings from environment variables.
+// Package config reads the app's settings from environment variables.
 package config
 
-import "os"
+import (
+	"fmt"
+	"os"
+)
 
-// Supported values of DB_DRIVER.
 const (
 	DriverPostgres = "postgres"
 	DriverMongo    = "mongo"
 )
 
-// Config holds every setting the app reads at startup.
 type Config struct {
 	DBDriver    string
 	PostgresDSN string
@@ -18,20 +19,24 @@ type Config struct {
 	HTTPAddr    string
 }
 
-// Load reads the environment, falling back to this level's defaults.
-func Load() Config {
-	return Config{
+// Load reads the environment and fails fast on an unknown DB_DRIVER.
+func Load() (Config, error) {
+	cfg := Config{
 		DBDriver:    getenv("DB_DRIVER", DriverPostgres),
 		PostgresDSN: getenv("POSTGRES_DSN", "postgres://todo:todo@localhost:5432/todo_l06?sslmode=disable"),
 		MongoURI:    getenv("MONGO_URI", "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"),
 		MongoDB:     getenv("MONGO_DB", "todo_l06"),
 		HTTPAddr:    getenv("HTTP_ADDR", ":8086"),
 	}
+	if cfg.DBDriver != DriverPostgres && cfg.DBDriver != DriverMongo {
+		return Config{}, fmt.Errorf("unknown DB_DRIVER %q: use %q or %q", cfg.DBDriver, DriverPostgres, DriverMongo)
+	}
+	return cfg, nil
 }
 
-func getenv(key, def string) string {
-	if v, ok := os.LookupEnv(key); ok && v != "" {
+func getenv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
 		return v
 	}
-	return def
+	return fallback
 }

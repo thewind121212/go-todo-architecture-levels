@@ -4,8 +4,7 @@ package main
 
 import (
 	"context"
-	"net/http"
-
+	"github.com/gin-gonic/gin"
 	"github.com/google/wire"
 	"github.com/rs/zerolog"
 
@@ -18,12 +17,12 @@ import (
 // known at runtime, so there is one injector per storage choice and main
 // picks one.
 
-func initPostgresServer(ctx context.Context, cfg config.Config, log zerolog.Logger) (*http.Server, func(), error) {
+func initPostgresApp(ctx context.Context, cfg config.Config, log zerolog.Logger) (*gin.Engine, func(), error) {
 	wire.Build(providers.PostgresSet)
 	return nil, nil, nil
 }
 
-func initMongoServer(ctx context.Context, cfg config.Config, log zerolog.Logger) (*http.Server, func(), error) {
+func initMongoApp(ctx context.Context, cfg config.Config, log zerolog.Logger) (*gin.Engine, func(), error) {
 	wire.Build(providers.MongoSet)
 	return nil, nil, nil
 }

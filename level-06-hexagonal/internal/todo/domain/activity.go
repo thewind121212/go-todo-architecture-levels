@@ -13,7 +13,7 @@ const (
 	ActionDeleted   Action = "deleted"
 )
 
-// Activity is one entry in a todo's append-only audit log.
+// Activity is one entry in a todo's append-only audit log. It outlives the todo it describes.
 // It belongs to the todo feature, so it lives in the same domain package.
 type Activity struct {
 	ID        string
@@ -22,19 +22,7 @@ type Activity struct {
 	CreatedAt time.Time
 }
 
-// NewActivity records that action happened to the todo with todoID.
-func NewActivity(todoID string, action Action) (*Activity, error) {
-	id, err := newID()
-	if err != nil {
-		return nil, err
-	}
-	return &Activity{ID: id, TodoID: todoID, Action: action, CreatedAt: now()}, nil
-}
-
-// CompletionAction is the action recorded when the completed flag changes to completed.
-func CompletionAction(completed bool) Action {
-	if completed {
-		return ActionCompleted
-	}
-	return ActionReopened
+// NewActivity records that action happened to the todo with the given ID at now.
+func NewActivity(todoID string, action Action, now time.Time) *Activity {
+	return &Activity{ID: newID(), TodoID: todoID, Action: action, CreatedAt: now}
 }

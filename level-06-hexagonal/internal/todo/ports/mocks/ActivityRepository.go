@@ -47,12 +47,12 @@ func (_m *MockActivityRepository) EXPECT() *MockActivityRepository_Expecter {
 	return &MockActivityRepository_Expecter{mock: &_m.Mock}
 }
 
-// Append provides a mock function for the type MockActivityRepository
-func (_mock *MockActivityRepository) Append(ctx context.Context, activity *domain.Activity) error {
+// Create provides a mock function for the type MockActivityRepository
+func (_mock *MockActivityRepository) Create(ctx context.Context, activity *domain.Activity) error {
 	ret := _mock.Called(ctx, activity)
 
 	if len(ret) == 0 {
-		panic("no return value specified for Append")
+		panic("no return value specified for Create")
 	}
 
 	var r0 error
@@ -64,19 +64,19 @@ func (_mock *MockActivityRepository) Append(ctx context.Context, activity *domai
 	return r0
 }
 
-// MockActivityRepository_Append_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Append'
-type MockActivityRepository_Append_Call struct {
+// MockActivityRepository_Create_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Create'
+type MockActivityRepository_Create_Call struct {
 	*mock.Call
 }
 
-// Append is a helper method to define mock.On call
+// Create is a helper method to define mock.On call
 //   - ctx context.Context
 //   - activity *domain.Activity
-func (_e *MockActivityRepository_Expecter) Append(ctx any, activity any) *MockActivityRepository_Append_Call {
-	return &MockActivityRepository_Append_Call{Call: _e.mock.On("Append", ctx, activity)}
+func (_e *MockActivityRepository_Expecter) Create(ctx any, activity any) *MockActivityRepository_Create_Call {
+	return &MockActivityRepository_Create_Call{Call: _e.mock.On("Create", ctx, activity)}
 }
 
-func (_c *MockActivityRepository_Append_Call) Run(run func(ctx context.Context, activity *domain.Activity)) *MockActivityRepository_Append_Call {
+func (_c *MockActivityRepository_Create_Call) Run(run func(ctx context.Context, activity *domain.Activity)) *MockActivityRepository_Create_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
@@ -94,12 +94,12 @@ func (_c *MockActivityRepository_Append_Call) Run(run func(ctx context.Context, 
 	return _c
 }
 
-func (_c *MockActivityRepository_Append_Call) Return(err error) *MockActivityRepository_Append_Call {
+func (_c *MockActivityRepository_Create_Call) Return(err error) *MockActivityRepository_Create_Call {
 	_c.Call.Return(err)
 	return _c
 }
 
-func (_c *MockActivityRepository_Append_Call) RunAndReturn(run func(ctx context.Context, activity *domain.Activity) error) *MockActivityRepository_Append_Call {
+func (_c *MockActivityRepository_Create_Call) RunAndReturn(run func(ctx context.Context, activity *domain.Activity) error) *MockActivityRepository_Create_Call {
 	_c.Call.Return(run)
 	return _c
 }

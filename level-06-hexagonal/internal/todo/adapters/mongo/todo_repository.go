@@ -44,6 +44,11 @@ func (r *TodoRepository) Get(ctx context.Context, id string) (*domain.Todo, erro
 	return toDomainTodo(&d), nil
 }
 
+// GetForUpdate is a plain find: a concurrent writer causes a write conflict and WithTransaction retries.
+func (r *TodoRepository) GetForUpdate(ctx context.Context, id string) (*domain.Todo, error) {
+	return r.Get(ctx, id)
+}
+
 func (r *TodoRepository) List(ctx context.Context, limit, offset int) ([]*domain.Todo, error) {
 	// UUIDv7 strings sort in creation order, so _id descending means newest first.
 	opts := options.Find().
