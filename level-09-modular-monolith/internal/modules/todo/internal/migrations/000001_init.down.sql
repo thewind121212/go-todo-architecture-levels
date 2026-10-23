@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS todo.todo_views;
+DROP TABLE IF EXISTS todo.outbox;
+DROP TABLE IF EXISTS todo.todos;
+DROP SCHEMA IF EXISTS todo;

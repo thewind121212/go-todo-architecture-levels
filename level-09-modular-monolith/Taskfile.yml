@@ -1,0 +1,57 @@
+version: '3'
+
+vars:
+  POSTGRES_DSN: '{{.POSTGRES_DSN | default "postgres://todo:todo@localhost:5432/todo_l09?sslmode=disable"}}'
+  # golang-migrate picks its pgx v5 driver from the "pgx5://" scheme.
+  MIGRATE_DB: '{{.POSTGRES_DSN | replace "postgres://" "pgx5://"}}'
+  MIGRATE: go run -tags pgx5 github.com/golang-migrate/migrate/v4/cmd/migrate@v4.20.1
+
+tasks:
+  run:pg:
+    desc: Run the API on Postgres (migrates at startup)
+    env: { DB_DRIVER: postgres }
+    cmds: [go run ./cmd/api]
+
+  run:mongo:
+    desc: Run the API on MongoDB
+    env: { DB_DRIVER: mongo }
+    cmds: [go run ./cmd/api]
+
+  test:
+    desc: Unit tests and the architecture test (no Docker)
+    cmds: [go test ./...]
+
+  test:integration:
+    desc: Integration tests with testcontainers (needs Docker)
+    cmds: [go test -tags=integration ./...]
+
+  lint:
+    desc: gofmt + go vet, with and without the integration tag
+    cmds:
+      - test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - go vet ./...
+      - go vet -tags=integration ./...
+
+  wire:generate:
+    desc: Regenerate cmd/api/wire_gen.go from cmd/api/wire.go
+    cmds: [go tool wire ./cmd/api]
+
+  mock:generate:
+    desc: Regenerate the mocks of both modules and the platform from .mockery.yml
+    cmds: [go tool mockery]
+
+  # Each module has its own migrations and its own history table, public.<module>_schema_migrations
+  # (schema-qualified, as the app does it: see internal/platform/database). So these take MODULE=todo|activity.
+  migrate:up:
+    desc: Apply one module's migrations with the golang-migrate CLI, e.g. `task migrate:up MODULE=todo` (the app also does this at startup)
+    requires: { vars: [MODULE] }
+    cmds: ['{{.MIGRATE}} -path internal/modules/{{.MODULE}}/internal/migrations -database "{{.MIGRATE_DB}}&{{.HISTORY}}" up']
+    vars:
+      HISTORY: 'x-migrations-table=%22public%22.%22{{.MODULE}}_schema_migrations%22&x-migrations-table-quoted=1'
+
+  migrate:down:
+    desc: Roll back one module's last migration with the golang-migrate CLI, e.g. `task migrate:down MODULE=activity`
+    requires: { vars: [MODULE] }
+    cmds: ['{{.MIGRATE}} -path internal/modules/{{.MODULE}}/internal/migrations -database "{{.MIGRATE_DB}}&{{.HISTORY}}" down 1']
+    vars:
+      HISTORY: 'x-migrations-table=%22public%22.%22{{.MODULE}}_schema_migrations%22&x-migrations-table-quoted=1'
