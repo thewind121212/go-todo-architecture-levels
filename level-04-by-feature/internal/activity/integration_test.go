@@ -5,6 +5,7 @@ package activity
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -13,7 +14,7 @@ import (
 
 func TestPostgres(t *testing.T) {
 	db := testdb.Postgres(t)
-	if err := MigratePostgres(context.Background(), db); err != nil {
+	if err := MigratePostgres(db); err != nil {
 		t.Fatal(err)
 	}
 	runContract(t, NewPostgresRepository(db))
@@ -27,6 +28,12 @@ func TestMongo(t *testing.T) {
 	runContract(t, NewMongoRepository(db))
 }
 
+// now is truncated to milliseconds, like the todo feature's clock, because
+// that is all MongoDB stores.
+func now() time.Time {
+	return time.Now().UTC().Truncate(time.Millisecond)
+}
+
 // runContract is the behavior both repositories must share.
 func runContract(t *testing.T, repo Repository) {
 	ctx := context.Background()
@@ -35,7 +42,7 @@ func runContract(t *testing.T, repo Repository) {
 		todoA, todoB := uuid.NewString(), uuid.NewString()
 		var want []Activity
 		for _, action := range []string{"created", "renamed", "completed"} {
-			a, err := New(todoA, action)
+			a, err := New(todoA, action, now())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -44,7 +51,7 @@ func runContract(t *testing.T, repo Repository) {
 			}
 			want = append(want, a)
 		}
-		other, _ := New(todoB, "created")
+		other, _ := New(todoB, "created", now())
 		if err := repo.Create(ctx, other); err != nil {
 			t.Fatalf("Create: %v", err)
 		}

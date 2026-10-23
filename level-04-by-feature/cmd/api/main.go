@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -81,11 +80,12 @@ func run(log zerolog.Logger) error {
 	// Cross-feature wiring: *activity.Service satisfies todo.ActivityRecorder,
 	// so main is the only place that knows both features.
 	activities := activity.NewService(store.activities)
-	todos := todo.NewService(store.todos, store.tx, activities)
+	todos := todo.NewService(store.tx, store.todos, activities)
 
-	gin.SetMode(gin.ReleaseMode)
+	// gin.New instead of gin.Default: httpx.RequestLogger replaces Gin's text
+	// logger, so each request is logged once, as zerolog JSON.
 	router := gin.New()
-	router.Use(gin.Recovery())
+	router.Use(gin.Recovery(), httpx.RequestLogger(log))
 	router.GET("/health", health(store.ping, log))
 	todo.NewHandler(todos, log).Register(router)
 	activity.NewHandler(activities, log).Register(router)
@@ -101,10 +101,12 @@ func run(log zerolog.Logger) error {
 	case <-ctx.Done():
 	}
 
+	// Graceful shutdown: stop accepting connections and let in-flight requests
+	// finish (bounded by the timeout) before the database is closed.
 	log.Info().Msg("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
@@ -113,7 +115,7 @@ func run(log zerolog.Logger) error {
 func openStorage(ctx context.Context, cfg config) (storage, error) {
 	switch cfg.driver {
 	case "postgres":
-		return openPostgres(ctx, cfg.postgresDSN)
+		return openPostgres(cfg.postgresDSN)
 	case "mongo":
 		return openMongo(ctx, cfg.mongoURI, cfg.mongoDB)
 	default:
@@ -121,8 +123,8 @@ func openStorage(ctx context.Context, cfg config) (storage, error) {
 	}
 }
 
-func openPostgres(ctx context.Context, dsn string) (storage, error) {
-	db, err := database.OpenPostgres(ctx, dsn)
+func openPostgres(dsn string) (storage, error) {
+	db, err := database.OpenPostgres(dsn)
 	if err != nil {
 		return storage{}, err
 	}
@@ -131,10 +133,12 @@ func openPostgres(ctx context.Context, dsn string) (storage, error) {
 		return storage{}, fmt.Errorf("postgres pool: %w", err)
 	}
 	// Each feature migrates its own table.
-	if err := todo.MigratePostgres(ctx, db); err != nil {
+	if err := todo.MigratePostgres(db); err != nil {
+		sqlDB.Close()
 		return storage{}, err
 	}
-	if err := activity.MigratePostgres(ctx, db); err != nil {
+	if err := activity.MigratePostgres(db); err != nil {
+		sqlDB.Close()
 		return storage{}, err
 	}
 	return storage{
@@ -147,16 +151,18 @@ func openPostgres(ctx context.Context, dsn string) (storage, error) {
 }
 
 func openMongo(ctx context.Context, uri, dbName string) (storage, error) {
-	client, err := database.OpenMongo(ctx, uri)
+	client, err := database.OpenMongo(uri)
 	if err != nil {
 		return storage{}, err
 	}
 	db := client.Database(dbName)
 	// Each feature creates its own collection and indexes.
 	if err := todo.MigrateMongo(ctx, db); err != nil {
+		client.Disconnect(ctx)
 		return storage{}, err
 	}
 	if err := activity.MigrateMongo(ctx, db); err != nil {
+		client.Disconnect(ctx)
 		return storage{}, err
 	}
 	return storage{
@@ -171,7 +177,7 @@ func openMongo(ctx context.Context, uri, dbName string) (storage, error) {
 func health(ping func(context.Context) error, log zerolog.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if err := ping(c.Request.Context()); err != nil {
-			httpx.InternalError(c, log, err)
+			httpx.InternalError(c, log, fmt.Errorf("ping: %w", err))
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})

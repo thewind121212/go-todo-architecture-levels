@@ -1,17 +1,26 @@
 package todo
 
 import (
+	"cmp"
 	"context"
 	"errors"
-	"sort"
+	"maps"
+	"slices"
+	"time"
 )
+
+var errBoom = errors.New("boom")
 
 type txKey struct{}
 
-// fakeTx marks ctx so the other fakes can check they ran inside WithinTx.
-type fakeTx struct{}
+// fakeTx marks ctx so the other fakes can check they ran inside WithinTx. It
+// does not undo writes.
+type fakeTx struct {
+	calls int
+}
 
-func (fakeTx) WithinTx(ctx context.Context, fn func(ctx context.Context) error) error {
+func (f *fakeTx) WithinTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	f.calls++
 	return fn(context.WithValue(ctx, txKey{}, true))
 }
 
@@ -40,29 +49,31 @@ func (r *fakeRepo) Get(_ context.Context, id string) (Todo, error) {
 	return t, nil
 }
 
+// GetForUpdate is Get: the fakes run one request at a time, so there is nothing to lock.
+func (r *fakeRepo) GetForUpdate(ctx context.Context, id string) (Todo, error) {
+	return r.Get(ctx, id)
+}
+
 func (r *fakeRepo) List(_ context.Context, limit, offset int) ([]Todo, error) {
-	todos := []Todo{}
-	for _, t := range r.todos {
-		todos = append(todos, t)
-	}
-	sort.Slice(todos, func(i, j int) bool { return todos[i].ID > todos[j].ID })
+	todos := slices.Collect(maps.Values(r.todos))
+	slices.SortFunc(todos, func(a, b Todo) int { return cmp.Compare(b.ID, a.ID) })
 	if offset >= len(todos) {
-		return []Todo{}, nil
+		return nil, nil
 	}
 	return todos[offset:min(offset+limit, len(todos))], nil
 }
 
-func (r *fakeRepo) Update(ctx context.Context, t Todo) error {
-	if _, err := r.Get(ctx, t.ID); err != nil {
-		return err
+func (r *fakeRepo) Update(_ context.Context, t Todo) error {
+	if _, ok := r.todos[t.ID]; !ok {
+		return ErrNotFound
 	}
 	r.todos[t.ID] = t
 	return nil
 }
 
-func (r *fakeRepo) Delete(ctx context.Context, id string) error {
-	if _, err := r.Get(ctx, id); err != nil {
-		return err
+func (r *fakeRepo) Delete(_ context.Context, id string) error {
+	if _, ok := r.todos[id]; !ok {
+		return ErrNotFound
 	}
 	delete(r.todos, id)
 	return nil
@@ -71,6 +82,7 @@ func (r *fakeRepo) Delete(ctx context.Context, id string) error {
 type recorded struct {
 	todoID string
 	action string
+	at     time.Time
 	inTx   bool
 }
 
@@ -80,11 +92,11 @@ type fakeRecorder struct {
 	err     error
 }
 
-func (r *fakeRecorder) Record(ctx context.Context, todoID, action string) error {
+func (r *fakeRecorder) Record(ctx context.Context, todoID, action string, at time.Time) error {
 	if r.err != nil {
 		return r.err
 	}
-	r.records = append(r.records, recorded{todoID: todoID, action: action, inTx: inTx(ctx)})
+	r.records = append(r.records, recorded{todoID: todoID, action: action, at: at, inTx: inTx(ctx)})
 	return nil
 }
 
@@ -95,5 +107,3 @@ func (r *fakeRecorder) actions() []string {
 	}
 	return actions
 }
-
-var errBoom = errors.New("boom")

@@ -1,117 +1,118 @@
 package todo
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // ActivityRecorder is the one thing this feature needs from the activity
 // feature. The interface is declared here, by its consumer, so this package
-// never imports activity: activity.Service satisfies it implicitly and main
+// never imports activity: *activity.Service satisfies it implicitly and main
 // wires the two together. Tests plug in a hand-written fake.
 type ActivityRecorder interface {
-	Record(ctx context.Context, todoID, action string) error
+	Record(ctx context.Context, todoID, action string, at time.Time) error
 }
 
-// TxManager runs fn in one transaction. platform/tx implements it for both
-// databases.
+// TxManager runs fn in one transaction; fn must use the ctx it receives.
+// platform/tx implements it for both databases.
 type TxManager interface {
 	WithinTx(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
+// Service holds the business flows. It is the only place that knows which
+// writes belong together, so it is the one that opens transactions.
 type Service struct {
-	repo       Repository
 	tx         TxManager
+	todos      Repository
 	activities ActivityRecorder
 }
 
-func NewService(repo Repository, tx TxManager, activities ActivityRecorder) *Service {
-	return &Service{repo: repo, tx: tx, activities: activities}
+func NewService(tx TxManager, todos Repository, activities ActivityRecorder) *Service {
+	return &Service{tx: tx, todos: todos, activities: activities}
 }
 
 func (s *Service) Create(ctx context.Context, title string) (Todo, error) {
-	t, err := New(title)
+	now := nowUTC()
+	todo, err := New(title, now)
 	if err != nil {
 		return Todo{}, err
 	}
 	// One transaction spans two features: the todo row and its activity row
 	// both join it through ctx.
 	err = s.tx.WithinTx(ctx, func(ctx context.Context) error {
-		if err := s.repo.Create(ctx, t); err != nil {
+		if err := s.todos.Create(ctx, todo); err != nil {
 			return err
 		}
-		return s.activities.Record(ctx, t.ID, ActionCreated)
+		return s.record(ctx, todo.ID, now, ActionCreated)
 	})
 	if err != nil {
 		return Todo{}, err
 	}
-	return t, nil
+	return todo, nil
 }
 
 func (s *Service) Get(ctx context.Context, id string) (Todo, error) {
-	id, err := parseID(id)
-	if err != nil {
-		return Todo{}, err
-	}
-	return s.repo.Get(ctx, id)
+	return s.todos.Get(ctx, id)
 }
 
 func (s *Service) List(ctx context.Context, limit, offset int) ([]Todo, error) {
-	if limit < 1 || limit > maxLimit {
-		return nil, ErrInvalidLimit
-	}
-	if offset < 0 {
-		return nil, ErrInvalidOffset
-	}
-	return s.repo.List(ctx, limit, offset)
+	return s.todos.List(ctx, limit, offset)
 }
 
+// Update validates the patch first, then reads, applies, saves and records
+// one activity per change in one transaction: if any step fails, nothing is
+// written.
 func (s *Service) Update(ctx context.Context, id string, p Patch) (Todo, error) {
-	if p.Title == nil && p.Completed == nil {
-		return Todo{}, ErrEmptyUpdate
-	}
-	id, err := parseID(id)
+	p, err := ValidatePatch(p)
 	if err != nil {
 		return Todo{}, err
 	}
-	var updated Todo
-	// The read happens inside the transaction because the activities written
-	// depend on the current state.
+	var todo Todo
 	err = s.tx.WithinTx(ctx, func(ctx context.Context) error {
-		t, err := s.repo.Get(ctx, id)
+		var err error
+		todo, err = s.todos.GetForUpdate(ctx, id)
 		if err != nil {
 			return err
 		}
-		actions, err := t.Apply(p)
-		if err != nil {
-			return err
-		}
-		updated = t
+		now := nowUTC()
+		actions := todo.Apply(p, now)
 		if len(actions) == 0 {
-			return nil
+			return nil // nothing changed, so nothing to write
 		}
-		if err := s.repo.Update(ctx, t); err != nil {
+		if err := s.todos.Update(ctx, todo); err != nil {
 			return err
 		}
-		for _, action := range actions {
-			if err := s.activities.Record(ctx, t.ID, action); err != nil {
-				return err
-			}
-		}
-		return nil
+		return s.record(ctx, todo.ID, now, actions...)
 	})
 	if err != nil {
 		return Todo{}, err
 	}
-	return updated, nil
+	return todo, nil
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
-	id, err := parseID(id)
-	if err != nil {
-		return err
-	}
+	now := nowUTC()
 	return s.tx.WithinTx(ctx, func(ctx context.Context) error {
-		if err := s.repo.Delete(ctx, id); err != nil {
+		if err := s.todos.Delete(ctx, id); err != nil {
 			return err
 		}
-		return s.activities.Record(ctx, id, ActionDeleted)
+		return s.record(ctx, id, now, ActionDeleted)
 	})
+}
+
+// record hands one activity per action to the activity feature. It must be
+// called inside WithinTx with the transaction's ctx, so the activity joins it.
+func (s *Service) record(ctx context.Context, todoID string, now time.Time, actions ...Action) error {
+	for _, action := range actions {
+		if err := s.activities.Record(ctx, todoID, string(action), now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// nowUTC is truncated to milliseconds because that is all MongoDB stores; this
+// way both adapters return exactly the time that was written.
+func nowUTC() time.Time {
+	return time.Now().UTC().Truncate(time.Millisecond)
 }

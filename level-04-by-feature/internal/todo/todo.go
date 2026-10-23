@@ -12,48 +12,47 @@ import (
 	"github.com/google/uuid"
 )
 
-const (
-	maxTitleLen = 200
-	maxLimit    = 100
-)
+const maxTitleLen = 200
 
+// Domain errors. The handler maps them to HTTP status codes with errors.Is,
+// so their messages are safe to show to clients.
 var (
-	ErrNotFound      = errors.New("todo not found")
-	ErrInvalidTitle  = errors.New("title must be 1-200 characters")
-	ErrEmptyUpdate   = errors.New("nothing to update: send title and/or completed")
-	ErrInvalidLimit  = errors.New("limit must be between 1 and 100")
-	ErrInvalidOffset = errors.New("offset must be 0 or greater")
+	ErrNotFound     = errors.New("todo not found")
+	ErrInvalidTitle = errors.New("title must be 1 to 200 characters")
+	ErrEmptyPatch   = errors.New("patch must set title or completed")
 )
 
-// Activity actions. They describe what happened to a todo, so this feature
-// owns them; the activity feature stores them as plain strings.
+// Action says what happened to a todo. The names belong to this feature; the
+// activity feature stores them as plain strings.
+type Action string
+
 const (
-	ActionCreated   = "created"
-	ActionRenamed   = "renamed"
-	ActionCompleted = "completed"
-	ActionReopened  = "reopened"
-	ActionDeleted   = "deleted"
+	ActionCreated   Action = "created"
+	ActionRenamed   Action = "renamed"
+	ActionCompleted Action = "completed"
+	ActionReopened  Action = "reopened"
+	ActionDeleted   Action = "deleted"
 )
 
-// Todo carries its JSON, GORM and BSON tags itself: one struct is the
-// simplest thing that works until a later level separates them.
+// Todo has no storage or JSON tags: the adapters and the handler map it to
+// their own shapes.
 type Todo struct {
-	ID        string    `json:"id" gorm:"type:uuid;primaryKey" bson:"_id"`
-	Title     string    `json:"title" gorm:"not null" bson:"title"`
-	Completed bool      `json:"completed" gorm:"not null;default:false" bson:"completed"`
-	CreatedAt time.Time `json:"created_at" gorm:"not null" bson:"created_at"`
-	UpdatedAt time.Time `json:"updated_at" gorm:"not null" bson:"updated_at"`
+	ID        string
+	Title     string
+	Completed bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
-// Patch is a partial update; nil fields stay unchanged.
+// Patch is a partial update. A nil field means "leave unchanged".
 type Patch struct {
 	Title     *string
 	Completed *bool
 }
 
-// New builds a valid, not yet completed todo.
-func New(title string) (Todo, error) {
-	title, err := cleanTitle(title)
+// New validates title and returns a new, not yet completed todo.
+func New(title string, now time.Time) (Todo, error) {
+	title, err := validateTitle(title)
 	if err != nil {
 		return Todo{}, err
 	}
@@ -61,23 +60,32 @@ func New(title string) (Todo, error) {
 	if err != nil {
 		return Todo{}, fmt.Errorf("new todo id: %w", err)
 	}
-	now := now()
 	return Todo{ID: id.String(), Title: title, CreatedAt: now, UpdatedAt: now}, nil
 }
 
-// Apply changes t and returns one action per real change, renamed first.
-// No actions means nothing changed.
-func (t *Todo) Apply(p Patch) ([]string, error) {
-	var actions []string
+// ValidatePatch checks p before any database call and returns it with the
+// title trimmed, so Apply only has to compare.
+func ValidatePatch(p Patch) (Patch, error) {
+	if p.Title == nil && p.Completed == nil {
+		return Patch{}, ErrEmptyPatch
+	}
 	if p.Title != nil {
-		title, err := cleanTitle(*p.Title)
+		title, err := validateTitle(*p.Title)
 		if err != nil {
-			return nil, err
+			return Patch{}, err
 		}
-		if title != t.Title {
-			t.Title = title
-			actions = append(actions, ActionRenamed)
-		}
+		p.Title = &title
+	}
+	return p, nil
+}
+
+// Apply changes t according to a validated patch and returns one action per
+// field that really changed, renamed first. No actions means nothing changed.
+func (t *Todo) Apply(p Patch, now time.Time) []Action {
+	var actions []Action
+	if p.Title != nil && *p.Title != t.Title {
+		t.Title = *p.Title
+		actions = append(actions, ActionRenamed)
 	}
 	if p.Completed != nil && *p.Completed != t.Completed {
 		t.Completed = *p.Completed
@@ -88,31 +96,15 @@ func (t *Todo) Apply(p Patch) ([]string, error) {
 		}
 	}
 	if len(actions) > 0 {
-		t.UpdatedAt = now()
+		t.UpdatedAt = now
 	}
-	return actions, nil
+	return actions
 }
 
-func cleanTitle(title string) (string, error) {
+func validateTitle(title string) (string, error) {
 	title = strings.TrimSpace(title)
 	if n := utf8.RuneCountInString(title); n < 1 || n > maxTitleLen {
 		return "", ErrInvalidTitle
 	}
 	return title, nil
-}
-
-// parseID returns the canonical form of id. A malformed id can never match a
-// todo, so it is reported as not found.
-func parseID(id string) (string, error) {
-	u, err := uuid.Parse(id)
-	if err != nil {
-		return "", ErrNotFound
-	}
-	return u.String(), nil
-}
-
-// now is truncated to milliseconds because Mongo stores milliseconds; both
-// adapters then round-trip identical values.
-func now() time.Time {
-	return time.Now().UTC().Truncate(time.Millisecond)
 }

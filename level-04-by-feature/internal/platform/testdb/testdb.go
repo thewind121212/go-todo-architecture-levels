@@ -34,7 +34,7 @@ func Postgres(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("postgres dsn: %v", err)
 	}
-	db, err := database.OpenPostgres(ctx, dsn)
+	db, err := database.OpenPostgres(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func Mongo(t *testing.T) *mongo.Client {
 	}
 	// The replica set advertises the container's internal address, so connect
 	// to the mapped port directly instead of discovering members.
-	client, err := database.OpenMongo(ctx, uri+"&directConnection=true")
+	client, err := database.OpenMongo(uri + "&directConnection=true")
 	if err != nil {
 		t.Fatal(err)
 	}

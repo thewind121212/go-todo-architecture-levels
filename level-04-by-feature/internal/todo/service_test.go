@@ -4,201 +4,163 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 )
 
-func newTestService() (*Service, *fakeRepo, *fakeRecorder) {
-	repo := newFakeRepo()
-	rec := &fakeRecorder{}
-	return NewService(repo, fakeTx{}, rec), repo, rec
+const unknownID = "0190a0e4-0000-7000-8000-000000000000"
+
+type testService struct {
+	*Service
+	tx   *fakeTx
+	repo *fakeRepo
+	rec  *fakeRecorder
 }
 
-func TestCreate(t *testing.T) {
-	svc, repo, rec := newTestService()
+func newTestService() testService {
+	s := testService{tx: &fakeTx{}, repo: newFakeRepo(), rec: &fakeRecorder{}}
+	s.Service = NewService(s.tx, s.repo, s.rec)
+	return s
+}
 
-	got, err := svc.Create(context.Background(), "  buy milk  ")
+func TestCreateRecordsInSameTx(t *testing.T) {
+	s := newTestService()
+
+	got, err := s.Create(context.Background(), "  buy milk  ")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if got.Title != "buy milk" || got.Completed {
-		t.Errorf("got %+v, want trimmed title and not completed", got)
+	if s.repo.todos[got.ID] != got {
+		t.Errorf("stored %+v, returned %+v", s.repo.todos[got.ID], got)
 	}
-	if got.CreatedAt.IsZero() || got.CreatedAt != got.UpdatedAt {
-		t.Errorf("timestamps not set: %+v", got)
-	}
-	if _, ok := repo.todos[got.ID]; !ok {
-		t.Error("todo not stored")
-	}
-	want := []recorded{{todoID: got.ID, action: ActionCreated, inTx: true}}
-	if !slices.Equal(rec.records, want) {
-		t.Errorf("records = %+v, want %+v", rec.records, want)
+	want := []recorded{{todoID: got.ID, action: "created", at: got.CreatedAt, inTx: true}}
+	if !slices.Equal(s.rec.records, want) {
+		t.Errorf("records = %+v, want %+v", s.rec.records, want)
 	}
 }
 
-func TestCreateTitleRules(t *testing.T) {
-	tests := []struct {
-		title   string
-		wantErr error
-	}{
-		{"   ", ErrInvalidTitle},
-		{strings.Repeat("x", 201), ErrInvalidTitle},
-		{strings.Repeat("x", 200), nil},
-		{strings.Repeat("é", 200), nil}, // runes, not bytes
+func TestCreateInvalidTitleSkipsTx(t *testing.T) {
+	s := newTestService()
+
+	if _, err := s.Create(context.Background(), " "); !errors.Is(err, ErrInvalidTitle) {
+		t.Fatalf("err = %v, want %v", err, ErrInvalidTitle)
 	}
-	for _, tt := range tests {
-		svc, _, _ := newTestService()
-		_, err := svc.Create(context.Background(), tt.title)
-		if !errors.Is(err, tt.wantErr) {
-			t.Errorf("Create(%d runes) error = %v, want %v", len([]rune(tt.title)), err, tt.wantErr)
-		}
+	if s.tx.calls != 0 {
+		t.Errorf("WithinTx called %d times, want 0", s.tx.calls)
 	}
 }
 
-func TestCreateFailsWhenRecorderFails(t *testing.T) {
-	svc, _, rec := newTestService()
-	rec.err = errBoom
+func TestUpdateRecordsEachChangeAtUpdatedAt(t *testing.T) {
+	s := newTestService()
+	todo, _ := s.Create(context.Background(), "old")
+	s.rec.records = nil
 
-	if _, err := svc.Create(context.Background(), "x"); !errors.Is(err, errBoom) {
-		t.Fatalf("error = %v, want %v", err, errBoom)
+	got, err := s.Update(context.Background(), todo.ID, Patch{Title: new(" new "), Completed: new(true)})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got.Title != "new" || !got.Completed || s.repo.todos[todo.ID] != got {
+		t.Errorf("got %+v, stored %+v", got, s.repo.todos[todo.ID])
+	}
+	want := []recorded{
+		{todoID: todo.ID, action: "renamed", at: got.UpdatedAt, inTx: true},
+		{todoID: todo.ID, action: "completed", at: got.UpdatedAt, inTx: true},
+	}
+	if !slices.Equal(s.rec.records, want) {
+		t.Errorf("records = %+v, want %+v", s.rec.records, want)
 	}
 }
 
-func TestUpdateActions(t *testing.T) {
-	tests := []struct {
-		name  string
-		patch Patch
-		want  []string
-	}{
-		{"rename and complete", Patch{Title: new("new"), Completed: new(true)}, []string{ActionRenamed, ActionCompleted}},
-		{"same title is no change", Patch{Title: new(" old ")}, nil},
-		{"same completed is no change", Patch{Completed: new(false)}, nil},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			svc, repo, rec := newTestService()
-			created, _ := svc.Create(context.Background(), "old")
-			rec.records = nil
+func TestUpdateWithoutChangeRecordsNothing(t *testing.T) {
+	s := newTestService()
+	todo, _ := s.Create(context.Background(), "same")
+	s.rec.records = nil
 
-			got, err := svc.Update(context.Background(), created.ID, tt.patch)
-			if err != nil {
-				t.Fatalf("Update: %v", err)
-			}
-			if !slices.Equal(rec.actions(), tt.want) {
-				t.Errorf("actions = %v, want %v", rec.actions(), tt.want)
-			}
-			if repo.todos[created.ID] != got {
-				t.Errorf("stored %+v, returned %+v", repo.todos[created.ID], got)
-			}
-		})
+	got, err := s.Update(context.Background(), todo.ID, Patch{Title: new("same"), Completed: new(false)})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got != todo || len(s.rec.records) != 0 {
+		t.Errorf("got %+v and records %+v, want unchanged todo and no records", got, s.rec.records)
 	}
 }
 
 func TestUpdateReopen(t *testing.T) {
-	svc, _, rec := newTestService()
-	created, _ := svc.Create(context.Background(), "x")
-	if _, err := svc.Update(context.Background(), created.ID, Patch{Completed: new(true)}); err != nil {
-		t.Fatalf("complete: %v", err)
+	s := newTestService()
+	todo, _ := s.Create(context.Background(), "x")
+	for _, completed := range []bool{true, false} {
+		if _, err := s.Update(context.Background(), todo.ID, Patch{Completed: new(completed)}); err != nil {
+			t.Fatalf("Update(completed=%v): %v", completed, err)
+		}
 	}
-
-	got, err := svc.Update(context.Background(), created.ID, Patch{Completed: new(false)})
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	if got.Completed {
-		t.Error("still completed")
-	}
-	want := []string{ActionCreated, ActionCompleted, ActionReopened}
-	if !slices.Equal(rec.actions(), want) {
-		t.Errorf("actions = %v, want %v", rec.actions(), want)
+	if want := []string{"created", "completed", "reopened"}; !slices.Equal(s.rec.actions(), want) {
+		t.Errorf("actions = %v, want %v", s.rec.actions(), want)
 	}
 }
 
-func TestUpdateErrors(t *testing.T) {
-	svc, _, _ := newTestService()
-	created, _ := svc.Create(context.Background(), "x")
+func TestUpdateValidatesBeforeTx(t *testing.T) {
 	tests := []struct {
 		name    string
-		id      string
 		patch   Patch
 		wantErr error
 	}{
-		{"empty patch", created.ID, Patch{}, ErrEmptyUpdate},
-		{"blank title", created.ID, Patch{Title: new(" ")}, ErrInvalidTitle},
-		{"unknown id", "0190a0e4-0000-7000-8000-000000000000", Patch{Completed: new(true)}, ErrNotFound},
-		{"malformed id", "nope", Patch{Completed: new(true)}, ErrNotFound},
+		{"empty patch", Patch{}, ErrEmptyPatch},
+		{"blank title", Patch{Title: new(" ")}, ErrInvalidTitle},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := svc.Update(context.Background(), tt.id, tt.patch); !errors.Is(err, tt.wantErr) {
-				t.Errorf("error = %v, want %v", err, tt.wantErr)
+			s := newTestService()
+			// The id is unknown, yet the answer is the validation error: input is
+			// checked before any database call.
+			if _, err := s.Update(context.Background(), unknownID, tt.patch); !errors.Is(err, tt.wantErr) {
+				t.Errorf("err = %v, want %v", err, tt.wantErr)
+			}
+			if s.tx.calls != 0 {
+				t.Errorf("WithinTx called %d times, want 0", s.tx.calls)
 			}
 		})
 	}
 }
 
-func TestUpdateFailsWhenRecorderFails(t *testing.T) {
-	svc, _, rec := newTestService()
-	created, _ := svc.Create(context.Background(), "x")
-	rec.err = errBoom
+func TestUpdateUnknownID(t *testing.T) {
+	s := newTestService()
 
-	if _, err := svc.Update(context.Background(), created.ID, Patch{Completed: new(true)}); !errors.Is(err, errBoom) {
-		t.Fatalf("error = %v, want %v", err, errBoom)
+	if _, err := s.Update(context.Background(), unknownID, Patch{Completed: new(true)}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want %v", err, ErrNotFound)
 	}
 }
 
-func TestDelete(t *testing.T) {
-	svc, repo, rec := newTestService()
-	created, _ := svc.Create(context.Background(), "x")
+func TestDeleteRecordsInSameTx(t *testing.T) {
+	s := newTestService()
+	todo, _ := s.Create(context.Background(), "x")
 
-	if err := svc.Delete(context.Background(), created.ID); err != nil {
+	if err := s.Delete(context.Background(), todo.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, ok := repo.todos[created.ID]; ok {
+	if _, ok := s.repo.todos[todo.ID]; ok {
 		t.Error("todo still stored")
 	}
-	last := rec.records[len(rec.records)-1]
-	if last != (recorded{todoID: created.ID, action: ActionDeleted, inTx: true}) {
-		t.Errorf("last record = %+v", last)
+	if last := s.rec.records[len(s.rec.records)-1]; last.action != "deleted" || !last.inTx {
+		t.Errorf("last record = %+v, want deleted inside the tx", last)
 	}
-	if err := svc.Delete(context.Background(), created.ID); !errors.Is(err, ErrNotFound) {
-		t.Errorf("second delete error = %v, want %v", err, ErrNotFound)
-	}
-}
-
-func TestDeleteFailsWhenRecorderFails(t *testing.T) {
-	svc, _, rec := newTestService()
-	created, _ := svc.Create(context.Background(), "x")
-	rec.err = errBoom
-
-	if err := svc.Delete(context.Background(), created.ID); !errors.Is(err, errBoom) {
-		t.Fatalf("error = %v, want %v", err, errBoom)
+	if err := s.Delete(context.Background(), todo.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("second Delete err = %v, want %v", err, ErrNotFound)
 	}
 }
 
-func TestList(t *testing.T) {
-	svc, _, _ := newTestService()
-	first, _ := svc.Create(context.Background(), "first")
-	second, _ := svc.Create(context.Background(), "second")
+// Every write fails when the activity feature fails: the error reaches the
+// caller, so WithinTx rolls back.
+func TestWritesFailWhenRecorderFails(t *testing.T) {
+	s := newTestService()
+	todo, _ := s.Create(context.Background(), "x")
+	s.rec.err = errBoom
 
-	got, err := svc.List(context.Background(), 20, 0)
-	if err != nil {
-		t.Fatalf("List: %v", err)
+	if _, err := s.Create(context.Background(), "y"); !errors.Is(err, errBoom) {
+		t.Errorf("Create err = %v, want %v", err, errBoom)
 	}
-	if len(got) != 2 || got[0].ID != second.ID || got[1].ID != first.ID {
-		t.Errorf("List = %+v, want newest first", got)
+	if _, err := s.Update(context.Background(), todo.ID, Patch{Completed: new(true)}); !errors.Is(err, errBoom) {
+		t.Errorf("Update err = %v, want %v", err, errBoom)
 	}
-
-	for _, tt := range []struct {
-		limit, offset int
-		wantErr       error
-	}{
-		{0, 0, ErrInvalidLimit},
-		{101, 0, ErrInvalidLimit},
-		{20, -1, ErrInvalidOffset},
-	} {
-		if _, err := svc.List(context.Background(), tt.limit, tt.offset); !errors.Is(err, tt.wantErr) {
-			t.Errorf("List(%d, %d) error = %v, want %v", tt.limit, tt.offset, err, tt.wantErr)
-		}
+	if err := s.Delete(context.Background(), todo.ID); !errors.Is(err, errBoom) {
+		t.Errorf("Delete err = %v, want %v", err, errBoom)
 	}
 }

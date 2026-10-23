@@ -22,11 +22,10 @@ type backend struct {
 
 func TestPostgres(t *testing.T) {
 	db := testdb.Postgres(t)
-	ctx := context.Background()
-	if err := MigratePostgres(ctx, db); err != nil {
+	if err := MigratePostgres(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := activity.MigratePostgres(ctx, db); err != nil {
+	if err := activity.MigratePostgres(db); err != nil {
 		t.Fatal(err)
 	}
 	runContract(t, backend{
@@ -57,7 +56,7 @@ func runContract(t *testing.T, b backend) {
 	ctx := context.Background()
 	mustCreate := func(t *testing.T, title string) Todo {
 		t.Helper()
-		td, err := New(title)
+		td, err := New(title, nowUTC())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -82,6 +81,27 @@ func runContract(t *testing.T, b backend) {
 	t.Run("get unknown id", func(t *testing.T) {
 		if _, err := b.todos.Get(ctx, unknownID); !errors.Is(err, ErrNotFound) {
 			t.Errorf("error = %v, want %v", err, ErrNotFound)
+		}
+	})
+
+	t.Run("get for update inside a transaction", func(t *testing.T) {
+		want := mustCreate(t, "locked")
+		err := b.tx.WithinTx(ctx, func(ctx context.Context) error {
+			got, err := b.todos.GetForUpdate(ctx, want.ID)
+			if err != nil {
+				return err
+			}
+			if got != want {
+				t.Errorf("got %+v, want %+v", got, want)
+			}
+			_, err = b.todos.GetForUpdate(ctx, unknownID)
+			if !errors.Is(err, ErrNotFound) {
+				t.Errorf("unknown id error = %v, want %v", err, ErrNotFound)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("WithinTx: %v", err)
 		}
 	})
 
@@ -110,9 +130,7 @@ func runContract(t *testing.T, b backend) {
 
 	t.Run("update", func(t *testing.T) {
 		td := mustCreate(t, "before")
-		if _, err := td.Apply(Patch{Title: new("after"), Completed: new(true)}); err != nil {
-			t.Fatal(err)
-		}
+		td.Apply(Patch{Title: new("after"), Completed: new(true)}, nowUTC())
 		if err := b.todos.Update(ctx, td); err != nil {
 			t.Fatalf("Update: %v", err)
 		}
@@ -151,24 +169,25 @@ func runContract(t *testing.T, b backend) {
 		if err := b.todos.Create(ctx, td); err != nil {
 			return err
 		}
-		return recorder.Record(ctx, td.ID, ActionCreated)
+		return recorder.Record(ctx, td.ID, string(ActionCreated), td.CreatedAt)
 	}
 
 	t.Run("commit persists todo and activity", func(t *testing.T) {
-		td, _ := New("committed")
+		td, _ := New("committed", nowUTC())
 		if err := b.tx.WithinTx(ctx, func(ctx context.Context) error { return writeBoth(ctx, td) }); err != nil {
 			t.Fatalf("WithinTx: %v", err)
 		}
 		if _, err := b.todos.Get(ctx, td.ID); err != nil {
 			t.Errorf("todo not committed: %v", err)
 		}
-		if acts, err := b.activities.ListByTodo(ctx, td.ID); err != nil || len(acts) != 1 {
-			t.Errorf("activities = %v, %v; want 1", acts, err)
+		acts, err := b.activities.ListByTodo(ctx, td.ID)
+		if err != nil || len(acts) != 1 || acts[0].CreatedAt != td.CreatedAt {
+			t.Errorf("activities = %v, %v; want 1 created at %v", acts, err, td.CreatedAt)
 		}
 	})
 
 	t.Run("rollback discards todo and activity", func(t *testing.T) {
-		td, _ := New("rolled back")
+		td, _ := New("rolled back", nowUTC())
 		errBoom := errors.New("boom")
 		err := b.tx.WithinTx(ctx, func(ctx context.Context) error {
 			if err := writeBoth(ctx, td); err != nil {

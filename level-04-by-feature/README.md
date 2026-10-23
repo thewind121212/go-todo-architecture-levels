@@ -3,78 +3,85 @@
 ## What this level teaches
 
 The code from level 3 (handler, service, repository) is regrouped by **business feature** instead of by
-technical layer: everything about todos lives in `internal/todo`, everything about the activity log in
-`internal/activity`. The two features talk through a tiny interface that the *consumer* declares
+technical layer. Everything about todos lives in `internal/todo`, and everything about the activity log
+lives in `internal/activity`. The two features talk through a tiny interface that the *consumer* declares
 (`todo.ActivityRecorder`), so `activity` never imports `todo` and `main` wires them together.
-One transaction still spans both features: the todo service opens it, and both features' repositories
-join it through the context.
+One transaction still spans both features: the todo service opens it, and the repositories of both
+features join it through the context.
 
 ## Folder tree
 
 ```
 level-04-by-feature/
-  cmd/api/main.go                 config from env, open DB, run migrations, wire features by hand, graceful shutdown
+  cmd/api/main.go                 config from env, open DB, run each feature's migration, wire by hand, graceful shutdown
   internal/
     todo/                         the todo feature, all layers in one folder
-      todo.go                     entity, title rules, Apply(patch) -> actions, sentinel errors, action names
-      service.go                  use cases; declares the TxManager and ActivityRecorder interfaces it needs
-      repository.go               Repository interface
-      postgres.go                 GORM repository + MigratePostgres
-      mongo.go                    Mongo repository + MigrateMongo
-      handler.go                  Gin routes for /todos and writeError (the one error -> status mapping)
-      fakes_test.go               hand-written fakes: repo, tx, activity recorder
-      service_test.go             business rules against the fakes
+      todo.go                     Todo, Patch, Action, New, ValidatePatch, Apply, domain errors (no tags)
+      service.go                  Service (Create/Get/List/Update/Delete); declares TxManager and ActivityRecorder
+      repository.go               Repository interface (Create/Get/GetForUpdate/List/Update/Delete)
+      postgres.go                 todoRow + mappers, PostgresRepository, MigratePostgres
+      mongo.go                    todoDoc + mappers, MongoRepository, MigrateMongo
+      handler.go                  request/response DTOs, /todos routes, id + limit/offset parsing, writeError
+      todo_test.go                New, ValidatePatch, Apply
+      service_test.go             orchestration against fakes: same tx, same timestamp, validate-before-tx, recorder failure
       handler_test.go             HTTP tests with httptest
-      integration_test.go         contract + cross-feature commit/rollback, Postgres and Mongo (tag: integration)
+      fakes_test.go               hand-written fakes: repo, tx, activity recorder
+      integration_test.go         contract + cross-feature commit/rollback on Postgres and Mongo (tag: integration)
     activity/                     the activity feature; knows nothing about todo
-      activity.go                 entity + constructor
-      service.go                  Record (joins the caller's tx) and List
-      repository.go               Repository interface
-      postgres.go                 GORM repository + MigratePostgres (table + todo_id index)
-      mongo.go                    Mongo repository + MigrateMongo (collection + todo_id index)
-      handler.go                  GET /todos/:id/activities
+      activity.go                 Activity, New (no tags)
+      service.go                  Service: Record (joins the caller's tx) and List
+      repository.go               Repository interface (Create/ListByTodo)
+      postgres.go                 activityRow + mappers, PostgresRepository, MigratePostgres (table + todo_id index)
+      mongo.go                    activityDoc + mappers, MongoRepository, MigrateMongo (collection + todo_id index)
+      handler.go                  DTOs, GET /todos/:id/activities, writeError
       *_test.go                   unit, handler and integration tests, same pattern as todo
     platform/                     shared infrastructure only, no business code
-      database/                   open Postgres / Mongo, EnsureCollection
-      tx/                         PostgresManager, MongoManager, PostgresDB(ctx) helper
-      httpx/                      InternalError: log the real error, answer {"error":"internal error"}
-      testdb/                     testcontainers setup shared by both features' integration tests
+      database/                   OpenPostgres, OpenMongo, EnsureCollection
+      tx/                         PostgresManager, MongoManager, Conn(ctx, db)
+      httpx/                      RequestLogger (one zerolog line per request), InternalError (log it, answer 500)
+      testdb/                     testcontainers setup that both features' integration tests share
   Taskfile.yml                    run:pg, run:mongo, test, test:integration, lint
 ```
 
 ## Request flow: `PATCH /todos/:id`
 
-1. `cmd/api/main.go` registered `todo.Handler` on the Gin router.
-2. `internal/todo/handler.go` `update` binds `{"title"?, "completed"?}` into a `todo.Patch`.
-3. `internal/todo/service.go` `Update` rejects an empty patch, parses the id (malformed → `ErrNotFound`),
-   then calls `tx.WithinTx`.
+1. `cmd/api/main.go` built the router (`gin.New()` + `gin.Recovery()` + `httpx.RequestLogger`) and
+   registered `todo.Handler` and `activity.Handler` on it.
+2. `internal/todo/handler.go` `updateTodo` parses `:id` with `uuid.Parse` (malformed → `ErrNotFound`, 404)
+   and binds `{"title"?, "completed"?}` into a `todo.Patch` (bad JSON → 400).
+3. `internal/todo/service.go` `Update` calls `ValidatePatch` from `todo.go` **before** touching the
+   database. An empty patch or a bad title is a 400, even for an unknown id. Then it calls `tx.WithinTx`.
 4. `internal/platform/tx/postgres.go` (or `mongo.go`) starts the transaction and puts it in `ctx`.
-5. Inside the transaction the service calls `repo.Get` → `internal/todo/postgres.go`, which finds the
-   transaction with `tx.PostgresDB(ctx, r.db)` (Mongo: the session already rides in `ctx`).
-6. `internal/todo/todo.go` `Apply` validates the title and returns the actions, e.g. `[renamed completed]`.
-7. `repo.Update` writes the todo; then, per action, `activities.Record(ctx, ...)`. That is
-   `internal/activity/service.go` behind the `todo.ActivityRecorder` interface, writing through
-   `internal/activity/postgres.go`, which joins **the same** transaction via the same ctx helper.
-8. `fn` returns nil → commit. Any error → rollback, and `handler.go` `writeError` maps it to 400/404/500.
+5. Inside the transaction, `GetForUpdate` in `internal/todo/postgres.go` gets the transaction via
+   `tx.Conn(ctx, r.db)` and runs `SELECT … FOR UPDATE`. On Mongo the session already rides in `ctx`.
+6. `todo.go` `Apply(patch, now)` only diffs, and returns e.g. `[renamed completed]`.
+7. `repo.Update` writes the todo. Then `record` calls `activities.Record(ctx, id, action, now)` for each
+   action. That is `internal/activity/service.go`, reached through the `todo.ActivityRecorder` interface.
+   It writes through `internal/activity/postgres.go`, which joins **the same** transaction via
+   `tx.Conn`. Every activity gets the same `now` as the todo's `updated_at`.
+8. `fn` returns nil → commit. Any error → rollback, and `writeError` in `handler.go` maps it to
+   400/404/500.
 
 ## Where the transaction lives
 
-In the todo service, around writes that belong to two features:
+The transaction is opened in the todo service, around writes that belong to two features:
 
 ```go
 // internal/todo/service.go
+patch, err := ValidatePatch(patch) // input checked before any database call
+...
 err = s.tx.WithinTx(ctx, func(ctx context.Context) error {
-	t, err := s.repo.Get(ctx, id)
+	todo, err = s.todos.GetForUpdate(ctx, id)
 	...
-	if err := s.repo.Update(ctx, t); err != nil {
+	now := nowUTC()
+	actions := todo.Apply(patch, now)
+	if len(actions) == 0 {
+		return nil // nothing changed, so nothing to write
+	}
+	if err := s.todos.Update(ctx, todo); err != nil {
 		return err
 	}
-	for _, action := range actions {
-		if err := s.activities.Record(ctx, t.ID, action); err != nil { // other feature, same tx
-			return err
-		}
-	}
-	return nil
+	return s.record(ctx, todo.ID, now, actions...) // other feature, same tx
 })
 ```
 
@@ -83,73 +90,93 @@ The mechanism lives in `platform/tx`, so both features can use it without import
 ```go
 // internal/platform/tx/postgres.go
 func (m *PostgresManager) WithinTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	return m.db.WithContext(ctx).Transaction(func(gtx *gorm.DB) error {
-		return fn(context.WithValue(ctx, gormTxKey{}, gtx))
+	return m.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return fn(context.WithValue(ctx, txKey{}, tx))
 	})
 }
 
 // Every Postgres repository, in either feature, starts its queries here.
-func PostgresDB(ctx context.Context, db *gorm.DB) *gorm.DB {
-	if gtx, ok := ctx.Value(gormTxKey{}).(*gorm.DB); ok {
-		return gtx
+func Conn(ctx context.Context, db *gorm.DB) *gorm.DB {
+	if tx, ok := ctx.Value(txKey{}).(*gorm.DB); ok {
+		return tx
 	}
 	return db.WithContext(ctx)
 }
 ```
 
-For Mongo, `MongoManager.WithinTx` wraps `session.WithTransaction`; the ctx it hands to `fn` already
+For Mongo, `MongoManager.WithinTx` wraps `session.WithTransaction`. The ctx it hands to `fn` already
 carries the session, so Mongo repositories need no helper.
 
 ## What changed from level 3
 
-The same layers, sliced by feature instead of by layer:
+The layers and the code are the same, sliced by feature instead of by layer:
 
 ```
-level 3 (by layer)                         level 4 (by feature)
-internal/                                  internal/
-  model/todo.go, activity.go, errors.go      todo/      todo.go  service.go  repository.go
-  service/todo_service.go                               postgres.go  mongo.go  handler.go
-  repository/repository.go                   activity/  activity.go  service.go  repository.go
-  repository/postgres/{db,todo_,activity_}               postgres.go  mongo.go  handler.go
-  repository/mongo/{db,todo_,activity_}      platform/  database/  tx/  httpx/  testdb/
-  handler/{router,todo_handler,dto,errors}
+level 3 (by layer)                              level 4 (by feature)
+internal/                                       internal/
+  model/todo.go                          ->       todo/todo.go
+  model/errors.go                        ->       todo/todo.go (domain errors)
+  model/activity.go                      ->       activity/activity.go   (Action type stays in todo)
+  service/todo_service.go                ->       todo/service.go        (+ ActivityRecorder, TxManager)
+                                                  activity/service.go    (new: Record, List)
+  repository/repository.go               ->       todo/repository.go, activity/repository.go
+  repository/postgres/todo_repository.go ->       todo/postgres.go
+  repository/postgres/activity_repo...   ->       activity/postgres.go
+  repository/mongo/todo_repository.go    ->       todo/mongo.go
+  repository/mongo/activity_repo...      ->       activity/mongo.go
+  repository/postgres/db.go              ->       platform/database/postgres.go (Open) + platform/tx/postgres.go
+  repository/mongo/db.go                 ->       platform/database/mongo.go (Open) + platform/tx/mongo.go
+  handler/todo_handler.go, dto.go        ->       todo/handler.go
+  handler/ (listActivities)              ->       activity/handler.go
+  handler/errors.go                      ->       writeError in each handler.go + platform/httpx
+  handler/router.go (requestLogger)      ->       platform/httpx.RequestLogger, routes in cmd/api/main.go
+  repository/fake/fake.go                ->       fakes_test.go in each feature
+  repository/repotest/repotest.go        ->       integration_test.go in each feature + platform/testdb
 ```
 
 * **Cohesion.** A change to "todo" touches one folder. Deleting a feature means deleting a folder
   (plus its lines in `main.go`).
-* **Activity is a real feature** with its own service and handler, instead of a repository the todo
-  service writes to directly.
-* **Consumer-side interface.** In level 3 the service used `repository.ActivityRepository` defined by the
-  repository layer. Now `todo/service.go` declares only what it needs:
-  `ActivityRecorder { Record(ctx, todoID, action string) error }`. `*activity.Service` satisfies it
-  implicitly (Go interfaces need no `implements`), `main.go` passes one into the other, and tests use a
-  small hand-written fake. The dependency arrow points one way only: `main → todo`, `main → activity`, never
-  `activity → todo`.
-* **Shared infra moves to `platform`.** The tx manager and its ctx helper used to live in each
-  repository subpackage; now both features need them, so they live in `platform/tx`. There is no
-  `shared`/`common`/`utils` package: `platform` holds infrastructure only.
-* **Each feature migrates itself** (`todo.MigratePostgres`, `activity.MigrateMongo`, ...).
-* The action names (`created`, `renamed`, ...) belong to `todo`, because they describe what happened
-  to a todo; `activity` stores them as plain strings.
+* **Activity is now a feature** with its own service and handler. In level 3 the todo service wrote
+  to `repository.ActivityRepository` directly.
+* **Consumer-side interface.** `todo/service.go` declares only what it needs:
+  `ActivityRecorder { Record(ctx, todoID, action string, at time.Time) error }`. `*activity.Service`
+  satisfies it implicitly (Go interfaces need no `implements`), `main.go` passes one into the other,
+  and tests use a small hand-written fake. Dependencies point one way only: `main → todo`,
+  `main → activity`, and never `activity → todo`. `at` is passed in so the activity's `created_at` equals
+  the todo's `updated_at`.
+* **Shared infrastructure moves to `platform`.** Each level 3 adapter package had its own `TxManager`
+  and a private `conn`. Both features need them now, so they live in `platform/tx` and `conn` becomes
+  the exported `tx.Conn`. There is no `shared`/`common`/`utils` package: `platform` holds
+  infrastructure only.
+* **Each feature migrates itself** (`todo.MigratePostgres`, `activity.MigrateMongo`, ...) instead of
+  one `Migrate` per database.
+* **The activity route's 404.** `activity/handler.go` has its own `errNotFound` with the message
+  `todo not found`, because it must not import `todo.ErrNotFound`.
+* **Renames forced by the package name** (to avoid stutter): `model.NewTodo` → `todo.New`,
+  `model.NewActivity` → `activity.New`, `service.TodoService` → `todo.Service`,
+  `repository.TodoRepository` → `todo.Repository`, `postgres.TodoRepository` →
+  `todo.PostgresRepository`, `postgres.TxManager` → `tx.PostgresManager`, `requestLogger` →
+  `httpx.RequestLogger` (exported, shared), `toModel` → `toTodo` / `toActivity`.
+  Everything else keeps its level 3 name and shape: `Patch`, `ValidatePatch`, `Apply`,
+  `GetForUpdate`, `ListByTodo`, `WithinTx`, `nowUTC`, `writeError`.
 
 ## Pros / cons / when to use this in real life
 
 Pros
-* Code you change together sits together; a feature folder is easy to read, review, own and delete.
+* Code that changes together sits together. A feature folder is easy to read, review, own and delete.
 * Package names become the domain vocabulary (`todo.Service`, `activity.Record`) instead of
   `service.TodoService`.
 * Consumer-side interfaces keep features decoupled and make fakes trivial.
 
 Cons
-* Features still share one database and one transaction, so they are not independent deployables.
-* Cross-feature calls need discipline: two features that both want to call each other create an import
-  cycle, and you must invert one side with an interface.
-* Inside a feature folder the layers are just files; nothing stops a handler from reaching into SQL.
+* Features still share one database and one transaction, so they cannot be deployed separately.
+* Cross-feature calls need discipline: if two features call each other, you get an import cycle and
+  must turn one side around with an interface.
+* Inside a feature folder the layers are just files, so nothing stops a handler from reaching into SQL.
 
-When to use it: most small and medium Go services. It is the default layout recommended by many Go
-teams once there is more than one business concept. Move to clean/hexagonal (level 5/6) when you need
-the domain strictly isolated from frameworks, or to a modular monolith (level 9) when features need
-their own data and transactions.
+When to use it: most small and medium Go services, once there is more than one business concept.
+Move to clean/hexagonal (levels 5 and 6) when the domain must be strictly isolated from frameworks.
+Move to a modular monolith (level 9) when features need their own data and transactions.
 
 ## Run & test
 
@@ -159,6 +186,7 @@ docker compose up -d                 # once, at repo root
 
 task run:pg                          # DB_DRIVER=postgres go run ./cmd/api   (:8084)
 task run:mongo                       # DB_DRIVER=mongo    go run ./cmd/api   (:8084)
+GIN_MODE=release task run:pg         # same, without Gin's debug lines
 
 task test                            # go test ./...                      unit tests, no Docker
 task test:integration                # go test -tags=integration ./...    testcontainers, both DBs + rollback
@@ -169,4 +197,4 @@ python3 scripts/smoke.py http://localhost:8084
 ```
 
 Config (env): `DB_DRIVER` (`postgres`|`mongo`), `POSTGRES_DSN`, `MONGO_URI`, `MONGO_DB` (`todo_l04`),
-`HTTP_ADDR` (`:8084`).
+`HTTP_ADDR` (`:8084`), `GIN_MODE`.

@@ -6,13 +6,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 )
 
-func TestHandlerList(t *testing.T) {
+func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
+	m.Run()
+}
+
+func TestHandlerList(t *testing.T) {
 	svc := NewService(&fakeRepo{})
 	router := gin.New()
 	NewHandler(svc, zerolog.Nop()).Register(router)
@@ -22,13 +27,14 @@ func TestHandlerList(t *testing.T) {
 		return w
 	}
 
-	for _, path := range []string{"/todos/" + todoID + "/activities", "/todos/nope/activities"} {
-		if w := get(path); w.Code != http.StatusOK || w.Body.String() != `{"items":[]}` {
-			t.Errorf("GET %s = %d %s, want 200 {\"items\":[]}", path, w.Code, w.Body)
-		}
+	if w := get("/todos/" + todoID + "/activities"); w.Code != http.StatusOK || w.Body.String() != `{"items":[]}` {
+		t.Errorf("unknown todo: got %d %s, want 200 {\"items\":[]}", w.Code, w.Body)
+	}
+	if w := get("/todos/not-a-uuid/activities"); w.Code != http.StatusNotFound || w.Body.String() != `{"error":"todo not found"}` {
+		t.Errorf("malformed id: got %d %s, want 404 todo not found", w.Code, w.Body)
 	}
 
-	if err := svc.Record(context.Background(), todoID, "created"); err != nil {
+	if err := svc.Record(context.Background(), todoID, "created", time.Now().UTC()); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	w := get("/todos/" + todoID + "/activities")

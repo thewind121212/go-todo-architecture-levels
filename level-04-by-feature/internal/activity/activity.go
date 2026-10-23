@@ -10,20 +10,20 @@ import (
 	"github.com/google/uuid"
 )
 
-// Activity has no foreign key to its todo: activities outlive deleted todos.
+// Activity is one entry in a todo's audit log. TodoID is not a foreign key:
+// activities outlive deleted todos.
 type Activity struct {
-	ID        string    `json:"id" gorm:"type:uuid;primaryKey" bson:"_id"`
-	TodoID    string    `json:"todo_id" gorm:"type:uuid;not null;index" bson:"todo_id"`
-	Action    string    `json:"action" gorm:"not null" bson:"action"`
-	CreatedAt time.Time `json:"created_at" gorm:"not null" bson:"created_at"`
+	ID        string
+	TodoID    string
+	Action    string
+	CreatedAt time.Time
 }
 
-func New(todoID, action string) (Activity, error) {
+// New returns a new activity for todoID that happened at now.
+func New(todoID, action string, now time.Time) (Activity, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return Activity{}, fmt.Errorf("new activity id: %w", err)
 	}
-	// Truncated to milliseconds because Mongo stores milliseconds.
-	now := time.Now().UTC().Truncate(time.Millisecond)
 	return Activity{ID: id.String(), TodoID: todoID, Action: action, CreatedAt: now}, nil
 }
