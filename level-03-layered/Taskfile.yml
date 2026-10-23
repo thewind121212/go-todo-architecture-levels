@@ -1,0 +1,28 @@
+# https://taskfile.dev — run `task --list` to see these.
+version: '3'
+
+tasks:
+  run:pg:
+    desc: Run the API on Postgres (:8083)
+    env: { DB_DRIVER: postgres }
+    cmds: [go run ./cmd/api]
+
+  run:mongo:
+    desc: Run the API on MongoDB (:8083)
+    env: { DB_DRIVER: mongo }
+    cmds: [go run ./cmd/api]
+
+  test:
+    desc: Unit tests (no Docker needed)
+    cmds: [go test ./...]
+
+  test:integration:
+    desc: Contract suite against Postgres and MongoDB in testcontainers (needs Docker)
+    cmds: [go test -tags=integration ./...]
+
+  lint:
+    desc: Fail on unformatted files, then go vet both build variants
+    cmds:
+      - test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - go vet ./...
+      - go vet -tags=integration ./...

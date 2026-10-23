@@ -1,0 +1,16 @@
+# mockery v3: generates testify mocks for the ports. Run with `task mock:generate`.
+all: false
+dir: '{{.InterfaceDir}}/mocks'
+filename: '{{.InterfaceName}}.go'
+structname: 'Mock{{.InterfaceName}}'
+pkgname: mocks
+template: testify
+formatter: goimports
+force-file-write: true
+packages:
+  example.com/todo/level06/internal/todo/ports:
+    interfaces:
+      TodoService:
+      TodoRepository:
+      ActivityRepository:
+      TxManager:

@@ -1,0 +1,33 @@
+version: '3'
+
+tasks:
+  run:pg:
+    desc: Run the API on Postgres (needs `docker compose up -d` at the repo root)
+    env:
+      DB_DRIVER: postgres
+    cmds:
+      - go run ./cmd/api
+
+  run:mongo:
+    desc: Run the API on MongoDB (needs `docker compose up -d` at the repo root)
+    env:
+      DB_DRIVER: mongo
+    cmds:
+      - go run ./cmd/api
+
+  test:
+    desc: Unit tests and the architecture test (no Docker needed)
+    cmds:
+      - go test ./...
+
+  test:integration:
+    desc: Contract suite against both adapters in throwaway containers (needs Docker)
+    cmds:
+      - go test -tags=integration ./...
+
+  lint:
+    desc: gofmt and go vet, with and without the integration tag
+    cmds:
+      - test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - go vet ./...
+      - go vet -tags=integration ./...
