@@ -4,6 +4,8 @@
 
 The code is split into three layers, and each one has a single job. The **handler** speaks HTTP, the **service** holds the business flow, and the **repositories** do plain single-table CRUD. Most importantly, the transaction moves out of storage and into the service: `TxManager.WithinTx` puts the transaction into the `context.Context`, and the repositories pick it up from there. The level also adds the first bits of production tooling: zerolog, a Taskfile and graceful shutdown.
 
+![Level 3 architecture: the handler calls TodoService, which opens the transaction with TxManager.WithinTx and passes it in ctx to the repository interfaces that the postgres and mongo adapters implement.](docs/architecture.svg)
+
 ## 2. Folder tree
 
 ```

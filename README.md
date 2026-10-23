@@ -58,8 +58,9 @@ Each level is an independent Go module, so you can copy one out as the starting 
 
 ## How to study this repo
 
-1. Read the levels **in order**. Each README has the same sections: what it teaches, the tree, how
-   `PATCH /todos/:id` flows through the code, where the transaction lives, what changed, and pros/cons/when to use it.
+1. Read the levels **in order**. Each README opens with one architecture diagram, then has the same sections:
+   what it teaches, the tree, how `PATCH /todos/:id` flows through the code, where the transaction lives, what
+   changed, and pros/cons/when to use it.
 2. **Diff consecutive levels.** That is the point of the repo: the diff should show the new idea and little else.
    ```sh
    git diff --no-index level-02-flat level-03-layered                   # flat → layers

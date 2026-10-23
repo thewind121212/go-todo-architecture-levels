@@ -7,6 +7,8 @@ It is still a single `package main`, so this only helps you find your way around
 the domain rules and each database now have their own file. Each store method still owns its
 transaction and the whole business flow inside it.
 
+![Level 2 architecture: the same code split into six files of one package main, where store_postgres.go and store_mongo.go still open their own transaction.](docs/architecture.svg)
+
 ## Folder tree
 
 ```

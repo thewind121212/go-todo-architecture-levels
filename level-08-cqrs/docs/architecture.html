@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Level 8 architecture</title>
+  <!-- Font source: system. No web-font link: GitHub blocks remote fonts inside README images,
+       so every stack falls through to the viewer's own sans, mono and serif faces. -->
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;   /* white-smoke */
+      --color-ink:     #2d3142;   /* jet-black */
+      --color-muted:   #4f5d75;   /* blue-slate */
+      --color-accent:  #bf4520;   /* burnt-tangerine */
+      --font-sans:     'Geist', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif', 'Noto Serif KR', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1200px; width: 100%; }
+    /* The SVG holds its readable width (min-width == the viewBox width, so the
+       type ramp is never silently scaled down). This wrapper lets a narrow
+       screen scroll the diagram instead of the whole page. */
+    .diagram-container { width: 100%; overflow-x: auto; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 960px; display: block; }
+    /* Paper has no scrollbar, so the local scroller would clip instead of
+       scroll. Let the diagram scale down to the sheet: smaller but whole
+       beats sharp but cut off. Must come after the svg rule above - a media
+       query adds no specificity, so a later plain rule would win. */
+    @media print {
+      .diagram-container { overflow-x: visible; }
+      svg { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Architecture · Level 8 · CQRS + outbox</p>
+    <h1>Two transactions, joined by an outbox</h1>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 960 592" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="architecture-title architecture-desc">
+        <title id="architecture-title">Level 8 CQRS: an outbox joins the write and read sides</title>
+        <desc id="architecture-desc">Commands go from the HTTP adapter through command.Service and the Todo aggregate, whose Save writes the state to todos and its events to the outbox in transaction 1; the outbox.Relay polls the outbox and, in one transaction per event, has projection.Projector upsert todo_views and activity_views and marks the event processed; queries read only those views through query.Service.</desc>
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#bf4520"/></marker>
+          <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+        </defs>
+
+        <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+        <!-- Zones and side headers -->
+        <rect x="40" y="368" width="320" height="112" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.4)" stroke-width="1" stroke-dasharray="4,4"/>
+        <rect x="166" y="372" width="68" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="200" y="381" fill="#5a6580" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.14em">TX 1 · SAVE</text>
+        <rect x="640" y="240" width="240" height="240" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.4)" stroke-width="1" stroke-dasharray="4,4"/>
+        <rect x="648" y="244" width="96" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="696" y="253" fill="#5a6580" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.14em">TX 2 · PER EVENT</text>
+        <text x="100" y="64" fill="#4f5d75" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.18em">WRITE SIDE</text>
+        <text x="860" y="64" fill="#4f5d75" font-size="8" font-weight="500" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0.18em">READ SIDE</text>
+
+        <!-- Arrows (behind nodes) -->
+        <path d="M 380,88 H 208 Q 200,88 200,96 V 160" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 760,160 V 96 Q 760,88 752,88 H 580" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 200,224 V 272" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 120,336 V 400" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 280,336 V 400" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 344,432 H 400" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 560,432 H 660" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 760,400 V 336" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 760,272 V 224" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 456,464 V 496 Q 456,504 448,504 H 304 Q 296,504 296,496 V 464" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+
+        <!-- Arrow labels -->
+        <rect x="264" y="68" width="52" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="290" y="77" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">COMMANDS</text>
+        <rect x="646" y="68" width="48" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="670" y="77" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">QUERIES</text>
+        <rect x="208" y="242" width="52" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="234" y="251" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">BEHAVIOR</text>
+        <rect x="76" y="346" width="36" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="94" y="355" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">STATE</text>
+        <rect x="288" y="346" width="44" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="310" y="355" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">EVENTS</text>
+        <rect x="364" y="412" width="32" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="380" y="421" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">POLL</text>
+        <rect x="568" y="412" width="64" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="600" y="421" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">EACH EVENT</text>
+        <rect x="768" y="362" width="44" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="790" y="371" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">UPSERT</text>
+        <rect x="332" y="484" width="88" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="376" y="493" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">MARK PROCESSED</text>
+
+        <!-- Nodes -->
+        <!-- Node: HTTP adapter -->
+        <rect x="380" y="56" width="200" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="380" y="56" width="200" height="64" rx="6" fill="rgba(79,93,117,0.1)" stroke="#5a6580" stroke-width="1"/>
+        <rect x="388" y="64" width="28" height="12" rx="2" fill="transparent" stroke="rgba(90,101,128,0.4)" stroke-width="0.8"/>
+        <text x="402" y="73" fill="#5a6580" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">HTTP</text>
+        <text x="480" y="92" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">HTTP adapter</text>
+        <text x="480" y="108" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">POST PATCH DELETE · GET</text>
+        <!-- Node: command side -->
+        <rect x="100" y="160" width="200" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="100" y="160" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <rect x="108" y="168" width="24" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+        <text x="120" y="177" fill="#2d3142" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">CMD</text>
+        <text x="200" y="196" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">command.Service</text>
+        <text x="200" y="212" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">parse → load → behavior → Save</text>
+        <!-- Node: aggregate -->
+        <rect x="100" y="272" width="200" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="100" y="272" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <rect x="108" y="280" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+        <text x="122" y="289" fill="#2d3142" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">ROOT</text>
+        <text x="200" y="308" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Todo aggregate</text>
+        <text x="200" y="324" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">records domain events</text>
+        <!-- Node: todos -->
+        <rect x="56" y="400" width="128" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="56" y="400" width="128" height="64" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+        <rect x="64" y="408" width="36" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.5)" stroke-width="0.8"/>
+        <text x="82" y="417" fill="#4f5d75" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">STATE</text>
+        <text x="120" y="436" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">todos</text>
+        <text x="120" y="452" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">WHERE version = v</text>
+        <!-- Node: outbox (focal) -->
+        <rect x="216" y="400" width="128" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="216" y="400" width="128" height="64" rx="6" fill="rgba(191,69,32,0.08)" stroke="#bf4520" stroke-width="1"/>
+        <rect x="224" y="408" width="40" height="12" rx="2" fill="transparent" stroke="rgba(191,69,32,0.5)" stroke-width="0.8"/>
+        <text x="244" y="417" fill="#bf4520" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">EVENTS</text>
+        <text x="280" y="436" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">outbox</text>
+        <text x="280" y="452" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">one row per event</text>
+        <!-- Node: relay (focal) -->
+        <rect x="400" y="400" width="160" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="400" y="400" width="160" height="64" rx="6" fill="rgba(191,69,32,0.08)" stroke="#bf4520" stroke-width="1"/>
+        <rect x="408" y="408" width="40" height="12" rx="2" fill="transparent" stroke="rgba(191,69,32,0.5)" stroke-width="0.8"/>
+        <text x="428" y="417" fill="#bf4520" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">WORKER</text>
+        <text x="480" y="436" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">outbox.Relay</text>
+        <text x="480" y="452" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">opens tx 2 per event</text>
+        <!-- Node: projector -->
+        <rect x="660" y="400" width="200" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="660" y="400" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <rect x="668" y="408" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+        <text x="682" y="417" fill="#2d3142" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">PROJ</text>
+        <text x="760" y="436" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">projection.Projector</text>
+        <text x="760" y="452" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">event → views, idempotent</text>
+        <!-- Node: read models -->
+        <rect x="660" y="272" width="200" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="660" y="272" width="200" height="64" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+        <rect x="668" y="280" width="36" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.5)" stroke-width="0.8"/>
+        <text x="686" y="289" fill="#4f5d75" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">VIEWS</text>
+        <text x="760" y="308" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">read models</text>
+        <text x="760" y="324" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">todo_views · activity_views</text>
+        <!-- Node: query side -->
+        <rect x="660" y="160" width="200" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="660" y="160" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <rect x="668" y="168" width="36" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+        <text x="686" y="177" fill="#2d3142" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">QUERY</text>
+        <text x="760" y="196" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">query.Service</text>
+        <text x="760" y="212" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">reads views, never the aggregate</text>
+
+        <!-- Callout -->
+        <text x="880" y="520" fill="#2d3142" font-size="14" font-style="italic" font-family="'Instrument Serif', 'Noto Serif', serif" text-anchor="end">reads may lag a write by one poll (100 ms)</text>
+        <path d="M 760,502 V 484" fill="none" stroke="rgba(45,49,66,0.4)" stroke-width="1" stroke-dasharray="4,3"/>
+        <circle cx="760" cy="482" r="2" fill="#2d3142"/>
+
+        <!-- Legend -->
+        <line x1="40" y1="540" x2="920" y2="540" stroke="rgba(45,49,66,0.1)" stroke-width="0.8"/>
+        <text x="40" y="564" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.18em">LEGEND</text>
+        <rect x="104" y="556" width="14" height="10" rx="2" fill="rgba(191,69,32,0.08)" stroke="#bf4520" stroke-width="1"/>
+        <text x="124" y="564" fill="#4f5d75" font-size="8.5" font-family="'Geist', system-ui, sans-serif">Focal</text>
+        <rect x="176" y="556" width="14" height="10" rx="2" fill="rgba(79,93,117,0.1)" stroke="#5a6580" stroke-width="1"/>
+        <text x="196" y="564" fill="#4f5d75" font-size="8.5" font-family="'Geist', system-ui, sans-serif">HTTP adapter</text>
+        <rect x="276" y="556" width="14" height="10" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="296" y="564" fill="#4f5d75" font-size="8.5" font-family="'Geist', system-ui, sans-serif">Code</text>
+        <rect x="344" y="556" width="14" height="10" rx="2" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+        <text x="364" y="564" fill="#4f5d75" font-size="8.5" font-family="'Geist', system-ui, sans-serif">Postgres table or Mongo collection</text>
+        <rect x="540" y="556" width="14" height="10" rx="2" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.4)" stroke-width="1" stroke-dasharray="3,2"/>
+        <text x="560" y="564" fill="#4f5d75" font-size="8.5" font-family="'Geist', system-ui, sans-serif">One transaction</text>
+        <line x1="652" y1="561" x2="676" y2="561" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <text x="684" y="564" fill="#4f5d75" font-size="8.5" font-family="'Geist', system-ui, sans-serif">Call / write</text>
+        <line x1="764" y1="561" x2="788" y2="561" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+        <text x="796" y="564" fill="#4f5d75" font-size="8.5" font-family="'Geist', system-ui, sans-serif">Later / async</text>
+
+      </svg>
+    </div>
+  </div>
+</body>
+</html>

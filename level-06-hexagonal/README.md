@@ -10,28 +10,10 @@ sliced by feature (`internal/todo/...`) in the style of
 [go-scaffolding](https://github.com/cuongtranba/go-scaffolding). This level also brings in the first
 heavier tools: Wire, mockery and SQL migrations.
 
-```
-     DRIVING side                       THE HEXAGON                          DRIVEN side
-   (calls the app)               domain + service + ports                (called by the app)
+![The hexagon: the HTTP driving adapter calls the driving port ports.TodoService, which service.TodoService implements; the service calls the driven ports TodoRepository, ActivityRepository and TxManager, which the Postgres and Mongo adapters implement; Wire binds one adapter set per DB_DRIVER](docs/architecture.svg)
 
-                               ______________________________
-                              /                              \
- +-----------------+         /   ports.TodoService            \
- | adapters/http   | ------>|      (driving port)              |        +-------------------+
- | Gin handlers,   |        |             |                    |   +--->| adapters/postgres |
- | DTOs            |        |             v                    |   |    | GORM + migrations |
- +-----------------+        |    service.TodoService           |   |    +-------------------+
-                            |    domain.Todo, domain.Activity  |---+          - or -
-                            |             |                    |   |    +-------------------+
-                            |             v                    |   +--->| adapters/mongo    |
-                             \   ports.TodoRepository         /         | driver v2 + BSON  |
-                              \  ports.ActivityRepository    /          +-------------------+
-                               \ ports.TxManager  (driven)  /
-                                \__________________________/
-
-       Dependencies point inward: every adapter imports ports + domain, never the reverse
-       (arch_test.go enforces it). Wire plugs exactly one driven adapter set in at startup.
-```
+Dependencies point inward: every adapter imports `ports` and `domain`, never the reverse, and `arch_test.go`
+enforces it. Wire plugs exactly one driven adapter set in at startup.
 
 ## Folder tree
 

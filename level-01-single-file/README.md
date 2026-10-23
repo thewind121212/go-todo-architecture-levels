@@ -6,6 +6,8 @@ The whole app (domain rules, two storage adapters, HTTP and wiring) lives in one
 It shows the smallest useful abstraction: a `store` interface with one Postgres and one Mongo implementation, picked at startup by `DB_DRIVER`.
 It also shows the core lesson of the series in its simplest form: every write saves the todo and its activity rows in **one transaction**, and that transaction is opened inside each store method.
 
+![Level 1 architecture: everything lives in main.go, the handlers call only the store interface, and postgresStore and mongoStore each open their own transaction against PostgreSQL or MongoDB.](docs/architecture.svg)
+
 ## Folder tree
 
 ```

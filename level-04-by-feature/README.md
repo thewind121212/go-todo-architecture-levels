@@ -9,6 +9,8 @@ lives in `internal/activity`. The two features talk through a tiny interface tha
 One transaction still spans both features: the todo service opens it, and the repositories of both
 features join it through the context.
 
+![The todo and activity features each hold a service and Postgres plus Mongo storage; todo calls activity only through its own ActivityRecorder interface, main wires them, and platform/tx WithinTx runs one transaction that both features' repositories join](docs/architecture.svg)
+
 ## Folder tree
 
 ```

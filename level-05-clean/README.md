@@ -8,22 +8,7 @@ declares the interfaces it needs (`usecase/ports.go`) and the adapters implement
 its own small struct with one `Execute(ctx, Input)` method. A test (`arch_test.go`) fails the build if
 the core ever imports an outer layer.
 
-```
-        +-----------------------------------------------------+
-        |  infrastructure + cmd/api   (config, server, main)  |
-        |   +---------------------------------------------+   |
-        |   |  adapter   (http, postgres, mongo)          |   |
-        |   |   +-------------------------------------+   |   |
-        |   |   |  usecase   (interactors + ports)    |   |   |
-        |   |   |   +-----------------------------+   |   |   |
-        |   |   |   |  entity  (Todo, Activity,   |   |   |   |
-        |   |   |   |   rules, sentinel errors)   |   |   |   |
-        |   |   |   +-----------------------------+   |   |   |
-        |   |   +-------------------------------------+   |   |
-        |   +---------------------------------------------+   |
-        +-----------------------------------------------------+
-                 every import arrow points inward  --->
-```
+![Clean Architecture rings: entity inside usecase inside adapter (http, postgres, mongo) inside infrastructure and cmd/api, with every import pointing inward, the use cases owning the ports that the storage adapters implement, and arch_test.go guarding the core boundary](docs/architecture.svg)
 
 ## Folder tree
 

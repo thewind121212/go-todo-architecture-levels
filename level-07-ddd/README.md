@@ -10,26 +10,7 @@ The **repository** saves an aggregate's state and its events in one transaction,
 **the aggregate is the consistency boundary, so it is also the transaction boundary**. Optimistic
 locking with a `version` replaces `SELECT … FOR UPDATE`.
 
-```
-  PATCH {"title":"new","completed":true}
-        |
-        v
-  application.TodoService.Update
-        |  1. parse value objects     ParseTodoID(raw) -> TodoID     NewTitle(raw) -> Title
-        |  2. load the aggregate      todos.Get(ctx, id)             (todo at version 3)
-        |  3. call its behavior       todo.Rename(title, now)        records TodoRenamed
-        |                             todo.Complete(now)             records TodoCompleted
-        |                                                            (Version() stays 3)
-        |  4. save it                 todos.Save(ctx, todo)
-        v
-  +-------------------- TodoRepository.Save: ONE transaction --------------------+
-  |  events := todo.PullEvents()          [TodoRenamed, TodoCompleted]           |
-  |  UPDATE todos SET ..., version = 4 WHERE id = ? AND version = 3              |
-  |      0 rows -> ErrConflict (409), roll back, nothing persists                |
-  |  INSERT INTO activities  (one row per event: id, todo_id, action, time)      |
-  +------------------------------------------------------------------------------+
-            state and events commit together, or not at all
-```
+![Level 7 architecture: the application service calls behavior on the Todo aggregate, then domain.TodoRepository.Save writes its state to todos and its recorded events to activities in one transaction, through the Postgres or the Mongo adapter, and a stale version fails the whole save with 409](docs/architecture.svg)
 
 ### Ubiquitous language
 

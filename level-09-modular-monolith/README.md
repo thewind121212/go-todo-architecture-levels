@@ -11,26 +11,7 @@ transaction crosses a module boundary, so activities become **eventually consist
 That last point is the core lesson: one shared transaction gives way to per-module transactions
 that stay in step through events.
 
-```
-                       one process: cmd/api, one router, one eventbus.Bus
- +------------------------- todo module ---------------------------+  +---- activity module ----+
- |  POST/PATCH/DELETE /todos/...      GET /todos, /todos/:id        |  | GET /todos/:id/activities|
- |        |                                 ^                       |  |          ^               |
- |  command.Service                   query.Service                 |  |  Service.ListActivities  |
- |        |                                 |                       |  |          |               |
- |  TodoRepository.Save: tx 1         todo.todo_views               |  |  activity.activities     |
- |    todo.todos + todo.outbox              ^                       |  |          ^               |
- |        |                                 | tx 2                  |  |          | one insert    |
- |        |                          projection.Projector           |  |  Service.Record          |
- +--------|---------------------------------^-----------------------+  +----------^---------------+
-          |                                 |                                     |
-          v                                 +---------------+---------------------+
-   outbox.Relay (platform, goroutine)                       |  subscribers, called in order
-     1. poll todo.outbox (oldest first)             eventbus.Bus.Publish(contracts.TodoRenamed)
-     2. integration.Publisher.Handle  ----------------------+
-          codec.Decode -> domain event -> toContract -> contract event
-     3. every subscriber committed? then mark the row processed (no transaction)
-```
+![Level 9 architecture: the platform relay polls todo.outbox and publishes each event on the in-process event bus; the todo projector and the activity module each commit it in their own schema, and the activity module imports nothing from todo but todo/contracts](docs/architecture.svg)
 
 ### Vocabulary
 
@@ -236,15 +217,11 @@ transaction of that module's own, exactly like the projector's.
 
 ### Before and after: one transaction vs. eventual consistency between modules
 
-```
-level 7: one transaction, one module          level 9: three commits, two modules
-                                                 tx 1 (todo)     todos + outbox
-tx: todos + activities                           ...later, the relay:
-    either both or neither                       tx 2 (todo)     todo_views      commits on its own
-    activities are never behind                  insert (activity) activities    commits on its own
-                                                 mark processed (no tx)
-                                                 activities lag a write by one poll
-```
+Level 7 had one transaction in one module: `todos` and `activities` were written together, either
+both or neither, so activities were never behind. Level 9 has three commits in two modules. Tx 1
+(todo) writes `todos` and `outbox`. Later, the relay delivers the event: tx 2 (todo) writes
+`todo_views` and the insert (activity) writes `activities`, each committing on its own, and then
+the row is marked processed with no transaction. Activities lag a write by one poll.
 
 What can go wrong now, and why it is still correct:
 

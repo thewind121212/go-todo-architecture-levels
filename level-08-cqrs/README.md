@@ -10,32 +10,7 @@ the aggregate's state and its events in one transaction, and a background **rela
 event to a **projector**, which updates the views. Reads become **eventually consistent**: they
 may lag a write by one poll interval (100 ms by default).
 
-```
-  WRITE SIDE                                          READ SIDE
-
-  POST / PATCH / DELETE                               GET /todos, /todos/:id, /todos/:id/activities
-        |                                                   ^
-        v                                                   |
-  command.Service                                     query.Service
-    parse -> load -> behavior -> Save                   parse id -> read a view (never an aggregate)
-        |                                                   ^
-        v                                                   |
-  +---- TodoRepository.Save: tx 1 ----+               +---------------------+
-  |  UPDATE todos ... WHERE version=3 |               |  todo_views         |
-  |  INSERT INTO outbox (event rows)  |               |  activity_views     |
-  +-----------------------------------+               +---------------------+
-        |                                                   ^
-        |   outbox: id | todo_id | name | payload | occurred_at | processed_at
-        v                                                   |
-  outbox.Relay (goroutine, every OUTBOX_POLL_INTERVAL)      |
-    SELECT ... WHERE processed_at IS NULL ORDER BY id       |
-    for each event, one transaction (tx 2):                 |
-      +---------------------------------------------------+ |
-      |  projection.Projector.Handle: upsert the view ----+-+
-      |                               add the activity    |
-      |  UPDATE outbox SET processed_at = now             |
-      +---------------------------------------------------+
-```
+![Level 8 architecture: commands go through the aggregate and Save writes todos plus outbox rows in tx 1; the outbox relay hands each event to the projector, which updates todo_views and activity_views while the relay marks the event processed in tx 2; queries read only those views](docs/architecture.svg)
 
 ### Vocabulary
 
@@ -100,6 +75,8 @@ Storage, in both databases:
 | `todo_views` | read | todo id | the projector (upsert / delete) |
 | `activity_views` | read | event id | the projector (insert if absent) |
 
+An outbox row is one event: `id`, `todo_id`, `name`, `payload`, `occurred_at`, and `processed_at`,
+which stays NULL until the relay has handled it.
 The outbox `payload` is `jsonb` in Postgres and the JSON text as a string in Mongo. Nothing
 queries inside it, so neither database needs to understand it. Mongo indexes: `outbox
 {processed_at, _id}` for the relay's poll, `activity_views {todo_id}`. Postgres has the same two
