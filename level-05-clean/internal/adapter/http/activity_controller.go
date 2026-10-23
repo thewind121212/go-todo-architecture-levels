@@ -25,7 +25,7 @@ func NewActivityController(list ListActivitiesUseCase, log zerolog.Logger) *Acti
 }
 
 func (ac *ActivityController) List(c *gin.Context) {
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		writeError(c, ac.log, err)
 		return

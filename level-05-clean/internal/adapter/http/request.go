@@ -9,14 +9,9 @@ import (
 	"example.com/todo/level05/internal/entity"
 )
 
-const (
-	defaultLimit = 20
-	maxLimit     = 100
-)
-
-// parseID returns the canonical form of the :id path parameter. A malformed id can never match a
-// todo, so it is reported as not found before any use case runs.
-func parseID(c *gin.Context) (string, error) {
+// todoID reads the :id path parameter. A malformed id can't match any todo,
+// so it is reported as not found rather than as a bad request.
+func todoID(c *gin.Context) (string, error) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		return "", entity.ErrNotFound
@@ -26,8 +21,8 @@ func parseID(c *gin.Context) (string, error) {
 
 // parsePage reads and range-checks ?limit= and ?offset=, so the use case receives valid ints.
 func parsePage(c *gin.Context) (limit, offset int, err error) {
-	limit, err = strconv.Atoi(c.DefaultQuery("limit", strconv.Itoa(defaultLimit)))
-	if err != nil || limit < 1 || limit > maxLimit {
+	limit, err = strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if err != nil || limit < 1 || limit > 100 {
 		return 0, 0, errInvalidLimit
 	}
 	offset, err = strconv.Atoi(c.DefaultQuery("offset", "0"))

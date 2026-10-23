@@ -13,11 +13,6 @@ import (
 	"example.com/todo/level04/internal/platform/httpx"
 )
 
-const (
-	defaultLimit = 20
-	maxLimit     = 100
-)
-
 // Request errors found by the handler itself, before the service is called.
 var (
 	errInvalidJSON   = errors.New("invalid JSON body")
@@ -89,14 +84,9 @@ func (h *Handler) createTodo(c *gin.Context) {
 }
 
 func (h *Handler) listTodos(c *gin.Context) {
-	limit, err := queryInt(c, "limit", defaultLimit)
-	if err != nil || limit < 1 || limit > maxLimit {
-		h.writeError(c, errInvalidLimit)
-		return
-	}
-	offset, err := queryInt(c, "offset", 0)
-	if err != nil || offset < 0 {
-		h.writeError(c, errInvalidOffset)
+	limit, offset, err := parsePage(c)
+	if err != nil {
+		h.writeError(c, err)
 		return
 	}
 	todos, err := h.todos.List(c.Request.Context(), limit, offset)
@@ -112,7 +102,7 @@ func (h *Handler) listTodos(c *gin.Context) {
 }
 
 func (h *Handler) getTodo(c *gin.Context) {
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		h.writeError(c, err)
 		return
@@ -126,7 +116,7 @@ func (h *Handler) getTodo(c *gin.Context) {
 }
 
 func (h *Handler) updateTodo(c *gin.Context) {
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		h.writeError(c, err)
 		return
@@ -146,7 +136,7 @@ func (h *Handler) updateTodo(c *gin.Context) {
 }
 
 func (h *Handler) deleteTodo(c *gin.Context) {
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		h.writeError(c, err)
 		return
@@ -158,9 +148,9 @@ func (h *Handler) deleteTodo(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// parseID returns the canonical form of the :id path parameter. A malformed
-// id can never match a todo, so it is ErrNotFound.
-func parseID(c *gin.Context) (string, error) {
+// todoID reads the :id path parameter. A malformed id can't match any todo,
+// so it is reported as not found rather than as a bad request.
+func todoID(c *gin.Context) (string, error) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		return "", ErrNotFound
@@ -168,13 +158,16 @@ func parseID(c *gin.Context) (string, error) {
 	return id.String(), nil
 }
 
-// queryInt reads an integer query parameter, or returns def when it is absent.
-func queryInt(c *gin.Context, key string, def int) (int, error) {
-	s, ok := c.GetQuery(key)
-	if !ok {
-		return def, nil
+func parsePage(c *gin.Context) (limit, offset int, err error) {
+	limit, err = strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if err != nil || limit < 1 || limit > 100 {
+		return 0, 0, errInvalidLimit
 	}
-	return strconv.Atoi(s)
+	offset, err = strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if err != nil || offset < 0 {
+		return 0, 0, errInvalidOffset
+	}
+	return limit, offset, nil
 }
 
 // writeError is the one place where this feature's errors become HTTP status

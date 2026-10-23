@@ -14,11 +14,6 @@ import (
 	"example.com/todo/level06/internal/todo/ports"
 )
 
-const (
-	defaultLimit = 20
-	maxLimit     = 100
-)
-
 // handler serves the todo endpoints.
 type handler struct {
 	svc ports.TodoService
@@ -40,14 +35,9 @@ func (h *handler) create(c *gin.Context) {
 }
 
 func (h *handler) list(c *gin.Context) {
-	limit, err := queryInt(c, "limit", defaultLimit)
-	if err != nil || limit < 1 || limit > maxLimit {
-		writeError(c, h.log, errInvalidLimit)
-		return
-	}
-	offset, err := queryInt(c, "offset", 0)
-	if err != nil || offset < 0 {
-		writeError(c, h.log, errInvalidOffset)
+	limit, offset, err := parsePage(c)
+	if err != nil {
+		writeError(c, h.log, err)
 		return
 	}
 	todos, err := h.svc.List(c.Request.Context(), limit, offset)
@@ -63,7 +53,7 @@ func (h *handler) list(c *gin.Context) {
 }
 
 func (h *handler) get(c *gin.Context) {
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		writeError(c, h.log, err)
 		return
@@ -77,7 +67,7 @@ func (h *handler) get(c *gin.Context) {
 }
 
 func (h *handler) update(c *gin.Context) {
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		writeError(c, h.log, err)
 		return
@@ -97,7 +87,7 @@ func (h *handler) update(c *gin.Context) {
 }
 
 func (h *handler) delete(c *gin.Context) {
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		writeError(c, h.log, err)
 		return
@@ -110,7 +100,7 @@ func (h *handler) delete(c *gin.Context) {
 }
 
 func (h *handler) listActivities(c *gin.Context) {
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		writeError(c, h.log, err)
 		return
@@ -127,9 +117,9 @@ func (h *handler) listActivities(c *gin.Context) {
 	c.JSON(http.StatusOK, listActivitiesResponse{Items: items})
 }
 
-// parseID returns the canonical form of the :id param. A malformed id cannot
-// name any todo, so it is "not found", and the core never sees it.
-func parseID(c *gin.Context) (string, error) {
+// todoID reads the :id path parameter. A malformed id can't match any todo,
+// so it is reported as not found rather than as a bad request.
+func todoID(c *gin.Context) (string, error) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		return "", domain.ErrNotFound
@@ -137,11 +127,14 @@ func parseID(c *gin.Context) (string, error) {
 	return id.String(), nil
 }
 
-// queryInt reads an optional integer query parameter, or fallback when it is absent.
-func queryInt(c *gin.Context, key string, fallback int) (int, error) {
-	raw, ok := c.GetQuery(key)
-	if !ok {
-		return fallback, nil
+func parsePage(c *gin.Context) (limit, offset int, err error) {
+	limit, err = strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if err != nil || limit < 1 || limit > 100 {
+		return 0, 0, errInvalidLimit
 	}
-	return strconv.Atoi(raw)
+	offset, err = strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if err != nil || offset < 0 {
+		return 0, 0, errInvalidOffset
+	}
+	return limit, offset, nil
 }

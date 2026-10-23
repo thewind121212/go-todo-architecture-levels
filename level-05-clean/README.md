@@ -59,7 +59,7 @@ level-05-clean/
 
 1. `adapter/http/router.go` routes the request to `TodoController.Update`.
 2. `adapter/http/todo_controller.go` binds the JSON into `updateTodoRequest` (pointer fields, so a missing
-   field is `nil`), and `parseID` in `adapter/http/request.go` turns `:id` into a canonical UUID (malformed
+   field is `nil`), and `todoID` in `adapter/http/request.go` turns `:id` into a canonical UUID (malformed
    is `ErrNotFound`, so 404). It then calls `UpdateTodoUseCase.Execute` with a `usecase.UpdateTodoInput`.
    The controller only knows that one-method interface, not the concrete interactor.
 3. `usecase/update_todo.go` validates before touching the database: an empty patch is `ErrEmptyPatch` and

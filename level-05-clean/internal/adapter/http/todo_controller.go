@@ -77,7 +77,7 @@ func (tc *TodoController) Create(c *gin.Context) {
 }
 
 func (tc *TodoController) Get(c *gin.Context) {
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		writeError(c, tc.log, err)
 		return
@@ -110,7 +110,7 @@ func (tc *TodoController) Update(c *gin.Context) {
 		writeError(c, tc.log, errInvalidJSON)
 		return
 	}
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		writeError(c, tc.log, err)
 		return
@@ -125,7 +125,7 @@ func (tc *TodoController) Update(c *gin.Context) {
 }
 
 func (tc *TodoController) Delete(c *gin.Context) {
-	id, err := parseID(c)
+	id, err := todoID(c)
 	if err != nil {
 		writeError(c, tc.log, err)
 		return
