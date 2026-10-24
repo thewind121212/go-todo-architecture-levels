@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg viewBox="0 0 960 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="architecture-title architecture-desc" id="architecture-root">
         <title id="architecture-title">Level 9 modular monolith: modules meet only on the event bus</title>
-        <desc id="architecture-desc">Inside one process, the platform's outbox.Relay polls the todo module's todo.outbox and publishes each event as a todo/contracts integration event on eventbus.Bus; the todo projector and the activity module's Service.Record each commit it in their own module's storage, todo.todo_views and activity.activities, and the activity module imports nothing from todo except its contracts.</desc>
+        <desc id="architecture-desc">Inside one process, the platform's outbox.Relay polls the todo module's todo.outbox and hands each message to the todo module's integration.Publisher, which publishes it as a todo/contracts integration event on eventbus.Bus; the bus runs projection.Projector, which upserts todo.todo_views in its own transaction, and the activity module's Service.Record, which inserts into activity.activities if absent; the activity module imports nothing from todo except its contracts.</desc>
         <defs>
       <style>#architecture-root { --color-paper:   #f5f5f5;   
       --color-ink:     #2d3142;   
@@ -35,21 +35,23 @@
 
         <!-- Arrows (behind nodes) -->
         <path d="M 216,120 H 248" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
-        <path d="M 440,120 H 512" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
-        <path d="M 584,152 V 216" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
-        <path d="M 512,248 H 440" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
+        <path d="M 512,120 H 440" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
+        <path d="M 512,136 H 484 Q 476,136 476,144 V 224 Q 476,232 468,232 H 440" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
+        <path d="M 440,264 H 512" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
+        <path d="M 560,280 V 304 Q 560,312 552,312 H 144 Q 136,312 136,304 V 280" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
         <path d="M 656,248 H 728" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
-        <path d="M 248,248 H 216" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
         <path d="M 816,216 V 152" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
         <path d="M 760,280 V 368 Q 760,376 752,376 H 440" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#architecture-arrow)"/>
 
         <!-- Arrow labels -->
         <rect x="460" y="100" width="32" height="12" rx="2" fill="#f5f5f5"/>
         <text x="476" y="109" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">POLL</text>
-        <rect x="592" y="178" width="48" height="12" rx="2" fill="#f5f5f5"/>
-        <text x="616" y="187" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">PUBLISH</text>
-        <rect x="458" y="228" width="36" height="12" rx="2" fill="#f5f5f5"/>
-        <text x="476" y="237" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">EVENT</text>
+        <rect x="428" y="176" width="40" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="448" y="185" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">HANDLE</text>
+        <rect x="452" y="246" width="48" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="476" y="255" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">PUBLISH</text>
+        <rect x="318" y="294" width="36" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="336" y="303" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">EVENT</text>
         <rect x="674" y="228" width="36" height="12" rx="2" fill="#f5f5f5"/>
         <text x="692" y="237" fill="#5a6580" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">EVENT</text>
         <rect x="558" y="356" width="76" height="12" rx="2" fill="#f5f5f5"/>
@@ -70,20 +72,21 @@
         <text x="276" y="105" fill="#4f5d75" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">OUTBOX</text>
         <text x="344" y="124" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">todo.outbox</text>
         <text x="344" y="140" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">tx 1, with todo.todos</text>
-        <!-- Node: todo read model -->
+        <!-- Node: todo projector (subscriber; todo.todo_views folded into its sublabel) -->
         <rect x="56" y="216" width="160" height="64" rx="6" fill="#f5f5f5"/>
-        <rect x="56" y="216" width="160" height="64" rx="6" fill="#2d3142" stroke="#4f5d75" stroke-width="1" fill-opacity="0.05"/>
-        <rect x="64" y="224" width="28" height="12" rx="2" fill="none" stroke="#4f5d75" stroke-width="0.8" stroke-opacity="0.5"/>
-        <text x="78" y="233" fill="#4f5d75" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">VIEW</text>
-        <text x="136" y="252" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">todo.todo_views</text>
-        <text x="136" y="268" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">tx 2 · upsert</text>
-        <!-- Node: todo projector -->
+        <rect x="56" y="216" width="160" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <rect x="64" y="224" width="24" height="12" rx="2" fill="none" stroke="#2d3142" stroke-width="0.8" stroke-opacity="0.4"/>
+        <text x="76" y="233" fill="#2d3142" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">SUB</text>
+        <text x="136" y="250" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">projection.Projector</text>
+        <text x="136" y="263" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">own tx 2 · upsert</text>
+        <text x="136" y="275" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">todo.todo_views</text>
+        <!-- Node: integration.Publisher, the relay's handler: domain event -> contract event on the bus -->
         <rect x="248" y="216" width="192" height="64" rx="6" fill="#f5f5f5"/>
         <rect x="248" y="216" width="192" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
         <rect x="256" y="224" width="24" height="12" rx="2" fill="none" stroke="#2d3142" stroke-width="0.8" stroke-opacity="0.4"/>
-        <text x="268" y="233" fill="#2d3142" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">SUB</text>
-        <text x="344" y="252" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">projection.Projector</text>
-        <text x="344" y="268" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">subscriber · own tx 2</text>
+        <text x="268" y="233" fill="#2d3142" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">PUB</text>
+        <text x="344" y="252" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">integration.Publisher</text>
+        <text x="344" y="268" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">domain → contract event</text>
         <!-- Node: contracts (focal) -->
         <rect x="248" y="344" width="192" height="64" rx="6" fill="#f5f5f5"/>
         <rect x="248" y="344" width="192" height="64" rx="6" fill="#bf4520" stroke="#bf4520" stroke-width="1" fill-opacity="0.08"/>
@@ -111,7 +114,7 @@
         <rect x="736" y="96" width="24" height="12" rx="2" fill="none" stroke="#4f5d75" stroke-width="0.8" stroke-opacity="0.5"/>
         <text x="748" y="105" fill="#4f5d75" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">LOG</text>
         <text x="816" y="124" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">activity.activities</text>
-        <text x="816" y="140" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">one insert per event</text>
+        <text x="816" y="140" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">insert if absent</text>
         <!-- Node: activity subscriber -->
         <rect x="728" y="216" width="176" height="64" rx="6" fill="#f5f5f5"/>
         <rect x="728" y="216" width="176" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>

@@ -11,7 +11,7 @@ transaction crosses a module boundary, so activities become **eventually consist
 That last point is the core lesson: one shared transaction gives way to per-module transactions
 that stay in step through events.
 
-![Level 9 architecture: the platform relay polls todo.outbox and publishes each event on the in-process event bus; the todo projector and the activity module each commit it in their own schema, and the activity module imports nothing from todo but todo/contracts](docs/architecture.svg)
+![Level 9 architecture: the platform relay polls todo.outbox and hands each message to the todo module's integration.Publisher, which publishes it on the in-process event bus; the todo projector and the activity module each commit it in their own schema, and the activity module imports nothing from todo but todo/contracts](docs/architecture.svg)
 
 ### Vocabulary
 
